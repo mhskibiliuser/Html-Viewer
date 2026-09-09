@@ -572,8 +572,7 @@ function App() {
       await dbPut(updated);
       setFiles(function (fs) { return fs.map(function (x) { return x.id === f.id ? updated : x; }); });
       var url = URL.createObjectURL(updated.blob);
-      var html = await updated.blob.text();
-      setPreview({ file: updated, allowStorage: !!updated.allowStorage, url: url, html: html });
+      setPreview({ file: updated, allowStorage: !!updated.allowStorage, url: url, });
       setDrawer(null);
     } catch (err) {
       console.error(err);
@@ -901,7 +900,7 @@ function App() {
           <iframe
             key={preview.file.id + '-' + preview.allowStorage}
             className="preview-frame"
-            srcDoc={preview.html}
+            src={preview.url}
             sandbox={preview.allowStorage ? 'allow-scripts allow-same-origin' : 'allow-scripts'}
             title={preview.file.name}
           ></iframe>
