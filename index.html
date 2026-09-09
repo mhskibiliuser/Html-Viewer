@@ -507,8 +507,8 @@ function App() {
   }
 
   function uploadFile(file) {
-    if (file.size > 20 * 1024 * 1024) {
-      showToast(file.name + ' is too large (20MB max)', 'error');
+    if (file.size > 50 * 1024 * 1024) {
+      showToast(file.name + ' is too large (50MB max)', 'error');
       return;
     }
     var id = genId();
