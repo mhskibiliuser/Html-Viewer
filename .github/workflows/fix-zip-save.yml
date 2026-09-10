@@ -1,0 +1,60 @@
+name: Fix Vellum ZIP save
+on:
+  push:
+    paths:
+      - '.github/workflows/fix-zip-save.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch ZIP storage and error handling
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          p=Path('index.html')
+          s=p.read_text()
+          # Ensure 150 MB HTML limit.
+          s=s.replace("if (file.size > 50 * 1024 * 1024) {", "if (file.size > 150 * 1024 * 1024) {")
+          s=s.replace("showToast(file.name + ' is too large (50MB max)', 'error');", "showToast(file.name + ' is too large (150MB max)', 'error');")
+          # Replace dbPut with stronger transaction/request error reporting.
+          old=re.search(r"async function dbPut\(record\) \{.*?\n\}\n\nasync function dbGetAll", s, re.S)
+          if not old: raise SystemExit('dbPut block not found')
+          new='''async function dbPut(record) {\n  var db = await dbOpen();\n  return new Promise(function (resolve, reject) {\n    try {\n      var tx = db.transaction(STORE_NAME, 'readwrite');\n      var req = tx.objectStore(STORE_NAME).put(record);\n      var settled = false;\n      function fail(err) { if (!settled) { settled = true; reject(err || new Error('IndexedDB write failed')); } }\n      req.onerror = function () { fail(req.error); };\n      tx.oncomplete = function () { if (!settled) { settled = true; resolve(); } };\n      tx.onerror = function () { fail(tx.error || req.error); };\n      tx.onabort = function () { fail(tx.error || req.error || new Error('IndexedDB transaction aborted')); };\n    } catch (err) { reject(err); }\n  });\n}\n\nasync function dbGetAll'''
+          s=s[:old.start()]+new+s[old.end():]
+          # Replace processZipFile: save original ZIP only; extract on open to avoid duplicating storage.
+          a=s.find('  async function processZipFile(')
+          b=s.find('\n  function handleFiles', a)
+          if a<0 or b<0: raise SystemExit('processZipFile boundaries not found')
+          fn='''  async function processZipFile(zipBlob, id) {\n    if (!window.JSZip) throw new Error('JSZip library not loaded');\n    if (zipBlob.size > 150 * 1024 * 1024) throw new Error('ZIP is too large (150 MB max)');\n    var zip = await window.JSZip.loadAsync(zipBlob);\n    var indexHtmlPath = null;\n    zip.forEach(function(path, file) {\n      if (!file.dir && !/^__MACOSX\\//i.test(path) && !indexHtmlPath && /(^|\\/)index\\.html?$/i.test(path)) indexHtmlPath = path.replace(/^\\.\\//,'');\n    });\n    if (!indexHtmlPath) throw new Error('ZIP does not contain index.html or index.htm');\n    var record = {\n      id: id, name: zipBlob.name, type: 'application/zip', size: zipBlob.size, blob: zipBlob,\n      isZip: true, zipFiles: null, indexHtmlPath: indexHtmlPath,\n      addedAt: Date.now(), openCount: 0, trashed: false, trashedAt: null, allowStorage: false\n    };\n    await dbPut(record);\n    setFiles(function(fs) { return fs.concat([record]); });\n    updateUpload(id, {progress:100, status:'done'});\n    showToast(zipBlob.name + ' saved as project', 'success');\n  }\n'''
+          s=s[:a]+fn+s[b:]
+          # Replace openFile with ZIP extraction on demand and useful save errors.
+          a=s.find('  async function openFile(f) {')
+          b=s.find('\n  function blobToText', a)
+          if a<0 or b<0: raise SystemExit('openFile boundaries not found')
+          fn='''  async function openFile(f) {\n    try {\n      var updated = Object.assign({}, f, {openCount:(f.openCount || 0) + 1});\n      await dbPut(updated);\n      setFiles(function(fs) { return fs.map(function(x) { return x.id === f.id ? updated : x; }); });\n      var url;\n      var blobUrls = {};\n      if (updated.isZip) {\n        if (!window.JSZip) throw new Error('JSZip library not loaded');\n        var zip = await window.JSZip.loadAsync(updated.blob);\n        var zipFiles = {};\n        var jobs = [];\n        zip.forEach(function(path, file) {\n          if (file.dir || /^__MACOSX\\//i.test(path)) return;\n          var clean = path.replace(/^\\.\\//,'');\n          jobs.push(file.async('blob').then(function(blob) { zipFiles[clean] = blob; }));\n        });\n        await Promise.all(jobs);\n        var entry = updated.indexHtmlPath || Object.keys(zipFiles).find(function(p){ return /(^|\\/)index\\.html?$/i.test(p); });\n        if (!entry || !zipFiles[entry]) throw new Error('index.html not found in saved ZIP');\n        var htmlText = await blobToText(zipFiles[entry]);\n        var processedHtml = processZipHtml(htmlText, zipFiles, blobUrls, entry);\n        url = URL.createObjectURL(new Blob([processedHtml], {type:'text/html; charset=utf-8'}));\n      } else {\n        url = URL.createObjectURL(updated.blob);\n      }\n      setPreview({file:updated, allowStorage:!!updated.allowStorage, url:url, blobUrls:blobUrls});\n      setDrawer(null);\n    } catch (err) {\n      console.error(err);\n      var reason = err && (err.name === 'QuotaExceededError' || /quota|storage/i.test(err.message || ''))\n        ? 'Not enough browser storage to save this project'\n        : (err && err.message ? err.message : 'unknown error');\n      showToast('Could not open/save ' + f.name + ': ' + reason, 'error');\n    }\n  }\n'''
+          s=s[:a]+fn+s[b:]
+          # Add a version marker.
+          if 'VELLUM_ZIP_SAVE_FIX_V3' not in s: s=s.replace('</script>','/* VELLUM_ZIP_SAVE_FIX_V3 */\n</script>',1)
+          p.write_text(s)
+          PY
+      - name: Verify
+        run: |
+          grep -n "150 \* 1024 \* 1024\|VELLUM_ZIP_SAVE_FIX_V3\|zipFiles: null" index.html
+      - name: Commit changes
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add index.html
+          git diff --cached --quiet || git commit -m 'Fix Vellum ZIP save and storage handling'
+          git push
+      - name: Remove temporary workflow
+        if: always()
+        run: |
+          git rm -f .github/workflows/fix-zip-save.yml || true
+          git commit -m 'Remove temporary ZIP fix workflow' || true
+          git push || true
