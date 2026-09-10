@@ -4,12 +4,12 @@
   "description": "Vellum — local HTML file viewer",
   "private": true,
   "scripts": {
-    "dev": "vite --host 0.0.0.0",
-    "start": "vite --host 0.0.0.0",
+    "dev": "vite --host 0.0.0.0 --port 8080",
+    "start": "vite --host 0.0.0.0 --port 8080",
     "build": "vite build",
-    "preview": "vite preview --host 0.0.0.0"
+    "preview": "vite preview --host 0.0.0.0 --port 8080"
   },
   "dependencies": {
-    "vite": "^7.1.5"
+    "vite": "^6.3.5"
   }
 }
