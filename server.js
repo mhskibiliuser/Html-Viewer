@@ -3,9 +3,10 @@ const fs = require('fs');
 const path = require('path');
 const url = require('url');
 
-const PORT = 8080;
+// Use the hosting platform's port when provided, otherwise 8080 for Codespaces/local use.
+const PORT = Number(process.env.PORT) || 8080;
 const HOST = '0.0.0.0';
-const DOCROOT = __dirname;
+const DOCROOT = path.resolve(__dirname);
 
 const mimeTypes = {
   '.html': 'text/html; charset=utf-8',
@@ -16,39 +17,51 @@ const mimeTypes = {
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',
   '.svg': 'image/svg+xml',
-  '.txt': 'text/plain',
+  '.txt': 'text/plain; charset=utf-8',
   '.webp': 'image/webp',
+  '.ico': 'image/x-icon',
+  '.gif': 'image/gif',
+  '.map': 'application/json',
 };
 
 const server = http.createServer((req, res) => {
   const parsedUrl = url.parse(req.url, true);
-  let pathname = parsedUrl.pathname;
+  let pathname = parsedUrl.pathname || '/';
 
-  // Default to index.html for root
+  // Default to index.html for root.
   if (pathname === '/') {
     pathname = '/index.html';
   }
 
-  // Remove leading slash for file lookup
-  const filePath = path.join(DOCROOT, pathname);
+  // Decode the URL safely before resolving the file path.
+  try {
+    pathname = decodeURIComponent(pathname);
+  } catch (_) {
+    res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('400 Bad Request');
+    return;
+  }
+
+  // Remove the leading slash for file lookup.
+  const relativePath = pathname.replace(/^[/\\]+/, '');
+  const filePath = path.resolve(DOCROOT, relativePath);
 
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.url} from ${req.socket.remoteAddress}`);
 
-  // Security check: prevent directory traversal
-  const realPath = path.resolve(filePath);
-  if (!realPath.startsWith(DOCROOT)) {
+  // Security check: prevent directory traversal outside the project root.
+  const rootPrefix = DOCROOT.endsWith(path.sep) ? DOCROOT : DOCROOT + path.sep;
+  if (filePath !== DOCROOT && !filePath.startsWith(rootPrefix)) {
     console.log(`[${new Date().toISOString()}] DENIED: Directory traversal attempt`);
-    res.writeHead(403, { 'Content-Type': 'text/plain' });
+    res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
     res.end('403 Forbidden');
     return;
   }
 
-  // Check if file exists
   fs.stat(filePath, (err, stats) => {
     if (err || !stats.isFile()) {
       console.log(`[${new Date().toISOString()}] File not found: ${filePath}`);
       res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' });
-      res.end('<html><body><h1>404 - File Not Found</h1><p>Path: ' + pathname + '</p></body></html>');
+      res.end('<!doctype html><html><body><h1>404 - File Not Found</h1><p>Path: ' + pathname + '</p></body></html>');
       return;
     }
 
@@ -67,20 +80,19 @@ const server = http.createServer((req, res) => {
 
     fileStream.on('error', (err) => {
       console.error(`[${new Date().toISOString()}] Stream error:`, err);
-      res.writeHead(500, { 'Content-Type': 'text/plain' });
+      if (!res.headersSent) {
+        res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+      }
       res.end('500 Server Error');
     });
   });
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`\n╔════════════════════════════════════════════╗`);
-  console.log(`║  HTTP Server Started                       ║`);
-  console.log(`╠════════════════════════════════════════════╣`);
-  console.log(`║  Host: ${HOST.padEnd(37)}║`);
-  console.log(`║  Port: ${PORT.toString().padEnd(37)}║`);
-  console.log(`║  Root: ${DOCROOT.padEnd(37)}║`);
-  console.log(`╚════════════════════════════════════════════╝\n`);
+  console.log(`\nHTTP Server Started`);
+  console.log(`Host: ${HOST}`);
+  console.log(`Port: ${PORT}`);
+  console.log(`Root: ${DOCROOT}\n`);
 });
 
 server.on('error', (err) => {
