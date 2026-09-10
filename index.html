@@ -1,2 +1,1280 @@
-<!doctype html>
-<html><head><meta charset="utf-8"><title>HTML Viewer</title></head><body><h1>HTML Viewer</h1></body></html>
+<!DOCTYPE html>
+<html lang="en">
+<head><script id="__bld_reveal_failsafe_shim">(function(){function mk(){var s={};return{getItem:function(k){return Object.prototype.hasOwnProperty.call(s,k)?s[k]:null;},setItem:function(k,v){s[k]=''+v;},removeItem:function(k){delete s[k];},clear:function(){s={};},key:function(i){return Object.keys(s)[i]||null;},get length(){return Object.keys(s).length;}};}['localStorage','sessionStorage'].forEach(function(n){try{var t=window[n];t&&t.getItem;}catch(e){try{Object.defineProperty(window,n,{value:mk(),configurable:true});}catch(_){}}});})();</script>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Vellum — local HTML file viewer</title>
+<meta name="description" content="Store and preview HTML files entirely inside your browser. No backend, no accounts, nothing leaves the tab." />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;1,9..144,500&family=Inter:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.44.0/dist/tabler-icons.min.css">
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+<style>
+  :root {
+    --bg: #0A0A0C;
+    --panel: #0E0F12;
+    --panel-2: #16171C;
+    --border: rgba(255,255,255,0.08);
+    --border-strong: rgba(255,255,255,0.18);
+    --text: #F4F2EC;
+    --text-muted: #9A9CA6;
+    --text-faint: #6B6D76;
+    --violet: #8B5CF6;
+    --cyan: #22D3EE;
+    --accent-gradient: linear-gradient(90deg, var(--violet), var(--cyan));
+    --danger: #F87171;
+    --success: #34D399;
+    --info: #60A5FA;
+    --radius-xl: 20px;
+    --radius-lg: 14px;
+    --radius-md: 8px;
+    --radius-sm: 6px;
+    --shadow-soft: 0 20px 60px rgba(0,0,0,0.5);
+    --shadow-tight: 0 6px 20px rgba(0,0,0,0.35);
+  }
+  * { box-sizing: border-box; }
+  html, body { background: var(--bg); }
+  body {
+    margin: 0;
+    color: var(--text);
+    font-family: 'Inter', -apple-system, sans-serif;
+    font-size: 15px;
+    line-height: 1.6;
+    overflow-x: hidden;
+    position: relative;
+  }
+  h1, h2, h3 { font-family: 'Fraunces', serif; font-optical-sizing: auto; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+  p { margin: 0; }
+  .fraunces-italic { font-family: 'Fraunces', serif; font-style: italic; font-weight: 500; color: var(--text); }
+  a { color: inherit; }
+  button { font-family: inherit; cursor: pointer; }
+  input { font-family: inherit; }
+
+  /* ---------- Scroll progress (native, no JS) ---------- */
+  .scroll-progress {
+    position: fixed; top: 0; left: 0; width: 100%; height: 3px;
+    transform-origin: left; transform: scaleX(0);
+    background: var(--accent-gradient);
+    z-index: 10000; pointer-events: none;
+  }
+  @supports (animation-timeline: scroll()) {
+    .scroll-progress {
+      animation: grow-progress linear;
+      animation-timeline: scroll(root block);
+    }
+  }
+  @keyframes grow-progress { to { transform: scaleX(1); } }
+
+  /* ---------- Ambient conic glow ---------- */
+  .ambient-glow {
+    position: fixed; top: 50%; left: 50%; z-index: -1;
+    width: 120vmax; height: 120vmax;
+    transform: translate(-50%, -50%);
+    background: conic-gradient(from 0deg, var(--violet), var(--cyan), #F472B6, var(--violet));
+    filter: blur(80px);
+    opacity: 0.3;
+    pointer-events: none;
+    animation: rotate 32s linear infinite;
+  }
+  .ambient-glow--reverse {
+    width: 90vmax; height: 90vmax;
+    opacity: 0.18;
+    animation: rotate-reverse 44s linear infinite;
+    filter: blur(90px);
+  }
+  @keyframes rotate { to { transform: translate(-50%, -50%) rotate(360deg); } }
+  @keyframes rotate-reverse { to { transform: translate(-50%, -50%) rotate(-360deg); } }
+
+  /* ---------- Cursor glow overlay ---------- */
+  .cursor-glow {
+    position: fixed; inset: 0; z-index: 4; pointer-events: none;
+    background: radial-gradient(600px circle at var(--mx, 50vw) var(--my, 40vh), rgba(139,92,246,0.15), transparent 70%);
+    mix-blend-mode: screen;
+  }
+
+  /* ---------- Scroll reveal (native, no JS) ---------- */
+  .reveal { opacity: 1; transform: none; }
+  @keyframes reveal-in {
+    from { opacity: 0; transform: translateY(28px); }
+    to { opacity: 1; transform: none; }
+  }
+  @supports (animation-timeline: view()) {
+    .reveal {
+      animation: reveal-in linear both;
+      animation-timeline: view();
+      animation-range: entry 0% cover 35%;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .ambient-glow, .ambient-glow--reverse { animation: none; }
+    .reveal { animation: none !important; opacity: 1 !important; transform: none !important; }
+    .scroll-progress { animation: none; }
+    * { scroll-behavior: auto !important; }
+  }
+
+  /* ---------- Layout shell ---------- */
+  .topbar {
+    position: sticky; top: 0; z-index: 50;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 16px 32px;
+    background: rgba(10,10,12,0.72);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    border-bottom: 1px solid var(--border);
+  }
+  .brand { display: flex; align-items: center; gap: 10px; }
+  .brand-mark {
+    width: 30px; height: 30px; border-radius: var(--radius-sm);
+    background: var(--accent-gradient);
+    display: flex; align-items: center; justify-content: center;
+    font-family: 'Fraunces', serif; font-weight: 600; font-size: 16px; color: #0A0A0C;
+  }
+  .brand-mark--sm { width: 20px; height: 20px; font-size: 12px; margin-right: 8px; }
+  .brand-name { font-family: 'Fraunces', serif; font-weight: 600; font-size: 19px; }
+  .topnav { display: flex; gap: 10px; }
+  .nav-btn {
+    display: flex; align-items: center; gap: 8px;
+    background: var(--panel); border: 1px solid var(--border);
+    color: var(--text); padding: 9px 14px; border-radius: var(--radius-md);
+    font-size: 13.5px; transition: border-color .2s ease, background .2s ease;
+  }
+  .nav-btn:hover { border-color: var(--border-strong); background: var(--panel-2); }
+  .count-pill {
+    background: rgba(139,92,246,0.18); color: #C4B5FD;
+    padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 500;
+  }
+
+  main { position: relative; z-index: 1; max-width: 1080px; margin: 0 auto; padding: 0 32px; }
+
+  .hero { padding: 96px 0 64px; text-align: center; }
+  .eyebrow { color: var(--text-faint); font-size: 13px; letter-spacing: 0.02em; margin-bottom: 18px; }
+  .hero h1 {
+    font-size: clamp(2.4rem, 5.5vw, 4.2rem);
+    line-height: 1.05;
+    background: linear-gradient(180deg, var(--text), var(--text-muted));
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+    min-height: 1.1em;
+  }
+  .hero-sub {
+    max-width: 560px; margin: 22px auto 0; color: var(--text-muted); font-size: 16.5px;
+  }
+  .accent-text { color: var(--cyan); font-weight: 500; }
+
+  .dropzone {
+    margin: 44px auto 0; max-width: 460px;
+    border: 1.5px dashed var(--border-strong);
+    border-radius: var(--radius-xl);
+    padding: 40px 28px;
+    background: rgba(255,255,255,0.015);
+    transition: border-color .25s ease, background .25s ease, transform .25s ease;
+  }
+  .dropzone--active { border-color: var(--violet); background: rgba(139,92,246,0.08); transform: scale(1.01); }
+  .dropzone-icon { font-size: 26px; color: var(--text-muted); margin-bottom: 10px; display: block; }
+  .dropzone p { color: var(--text-muted); font-size: 14px; margin-bottom: 16px; }
+
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    border: none; border-radius: var(--radius-md);
+    padding: 11px 18px; font-size: 14px; font-weight: 500;
+    transition: transform .15s ease, box-shadow .15s ease, background .2s ease, border-color .2s ease, opacity .2s ease;
+  }
+  .btn-primary { background: var(--accent-gradient); color: #0A0A0C; box-shadow: 0 8px 24px rgba(139,92,246,0.35); }
+  .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 12px 30px rgba(139,92,246,0.45); }
+  .btn-ghost { background: transparent; border: 1px solid var(--border); color: var(--text); }
+  .btn-ghost:hover { border-color: var(--border-strong); background: rgba(255,255,255,0.04); }
+  .btn-sm { padding: 7px 12px; font-size: 13px; border-radius: var(--radius-sm); }
+  .btn-danger { color: var(--danger); }
+  .btn-danger:hover { border-color: rgba(248,113,113,0.4); background: rgba(248,113,113,0.08); }
+  .btn-danger-solid { background: var(--danger); color: #240808; }
+  .icon-btn {
+    background: transparent; border: 1px solid var(--border); color: var(--text-muted);
+    width: 32px; height: 32px; border-radius: var(--radius-sm);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .icon-btn:hover { color: var(--text); border-color: var(--border-strong); }
+
+  .stats-row { display: flex; justify-content: center; gap: 56px; margin-top: 56px; }
+  .stat { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+  .stat-num { font-family: 'Fraunces', serif; font-weight: 600; font-size: 30px; color: var(--text); }
+  .stat-label { color: var(--text-faint); font-size: 12.5px; }
+
+  /* ---------- Upload bar ---------- */
+  .upload-bar-wrap { padding: 0 0 32px; animation: fade-up .45s ease both; }
+  @keyframes fade-up { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+  @media (prefers-reduced-motion: reduce) { .upload-bar-wrap { animation: none; } }
+  .upload-bar-panel {
+    background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-lg);
+    padding: 6px; box-shadow: var(--shadow-tight);
+  }
+  .upload-row { display: flex; align-items: center; gap: 12px; padding: 12px 14px; }
+  .upload-icon { font-size: 18px; color: var(--cyan); }
+  .upload-icon--error { color: var(--danger); }
+  .upload-info { flex: 1; min-width: 0; }
+  .upload-name { font-size: 13.5px; display: block; margin-bottom: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .upload-track { height: 5px; background: rgba(255,255,255,0.06); border-radius: 999px; overflow: hidden; }
+  .upload-fill { height: 100%; background: var(--accent-gradient); border-radius: 999px; transition: width .18s ease; }
+  .upload-fill--error { background: var(--danger); }
+  .upload-status { font-size: 12px; color: var(--text-faint); width: 44px; text-align: right; }
+
+  /* ---------- How it works ---------- */
+  .how-it-works { padding: 72px 0 88px; text-align: center; }
+  .section-title { font-size: 30px; margin-bottom: 14px; }
+  .section-lead { color: var(--text-muted); font-size: 17px; margin-bottom: 40px; }
+  .card-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; text-align: left; }
+  .spotlight {
+    position: relative; overflow: hidden;
+    background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius-lg);
+    padding: 26px 24px; box-shadow: var(--shadow-tight);
+    transition: border-color .25s ease;
+    --mx: 50%; --my: 50%;
+  }
+  .spotlight::before {
+    content: ''; position: absolute; inset: 0; border-radius: inherit;
+    background: radial-gradient(220px circle at var(--mx) var(--my), rgba(255,255,255,0.18), transparent 60%);
+    opacity: 0; transition: opacity .3s ease; pointer-events: none;
+  }
+  .spotlight:hover::before { opacity: 1; }
+  .spotlight:hover { border-color: var(--border-strong); }
+  .spotlight-icon { font-size: 22px; color: var(--violet); margin-bottom: 14px; display: block; }
+  .spotlight h3 { font-size: 17px; margin-bottom: 8px; }
+  .spotlight p { color: var(--text-muted); font-size: 14px; }
+
+  /* ---------- Footer ---------- */
+  .site-footer {
+    position: relative; z-index: 1;
+    border-top: 1px solid var(--border);
+    padding: 28px 32px 40px; max-width: 1080px; margin: 0 auto;
+    display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 14px;
+    color: var(--text-faint); font-size: 13px;
+  }
+  .site-footer > div:first-child { display: flex; align-items: center; }
+  .footer-meta { display: flex; flex-direction: column; gap: 4px; text-align: right; }
+
+  /* ---------- Drawers ---------- */
+  .drawer-backdrop {
+    position: fixed; inset: 0; z-index: 80;
+    background: rgba(6,6,8,0.55);
+    display: flex; justify-content: flex-end;
+    animation: fade-in .2s ease both;
+  }
+  @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+  .drawer {
+    width: min(400px, 92vw); height: 100%;
+    background: rgba(14,15,18,0.86);
+    backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+    border-left: 1px solid var(--border-strong);
+    box-shadow: var(--shadow-soft);
+    display: flex; flex-direction: column;
+    padding: 22px;
+    animation: slide-in .32s cubic-bezier(.16,1,.3,1) both;
+  }
+  @keyframes slide-in { from { transform: translateX(100%); opacity: .6; } to { transform: translateX(0); opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) {
+    .drawer-backdrop, .drawer { animation: none; }
+  }
+  .drawer-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
+  .drawer-head h2 { font-size: 21px; }
+  .drawer-search {
+    display: flex; align-items: center; gap: 8px;
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius-md);
+    padding: 9px 12px; margin-bottom: 14px; color: var(--text-faint);
+  }
+  .drawer-search input { background: transparent; border: none; outline: none; color: var(--text); font-size: 13.5px; flex: 1; }
+  .drawer-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; margin: 0 -8px; }
+  .drawer-empty { color: var(--text-faint); font-size: 13.5px; padding: 20px 8px; text-align: center; }
+  .file-row {
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 8px; border-radius: var(--radius-sm);
+    transition: background .15s ease;
+  }
+  .file-row:hover { background: rgba(255,255,255,0.035); }
+  .file-row-icon { font-size: 17px; color: var(--text-faint); flex-shrink: 0; }
+  .file-row-info { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .file-row-name { font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .file-row-meta { font-size: 11.5px; color: var(--text-faint); margin-top: 2px; }
+  .file-row-actions {
+    display: flex; gap: 6px; opacity: 0; transform: translateX(4px);
+    transition: opacity .15s ease, transform .15s ease; flex-shrink: 0;
+  }
+  .file-row:hover .file-row-actions, .file-row:focus-within .file-row-actions { opacity: 1; transform: none; }
+
+  /* ---------- Preview overlay ---------- */
+  .preview-overlay {
+    position: fixed; inset: 0; z-index: 90;
+    background: #08080A;
+    display: flex; flex-direction: column;
+    animation: fade-in .2s ease both;
+  }
+  .preview-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 20px; border-bottom: 1px solid var(--border);
+    background: var(--panel);
+  }
+  .preview-title { display: flex; align-items: center; gap: 8px; font-size: 13.5px; color: var(--text-muted); min-width: 0; }
+  .preview-title span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 40vw; }
+  .preview-actions { display: flex; align-items: center; gap: 10px; }
+  .preview-frame { flex: 1; width: 100%; border: none; background: #fff; }
+
+  .storage-toggle { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-muted); cursor: pointer; }
+  .storage-toggle input { position: absolute; opacity: 0; width: 0; height: 0; }
+  .toggle-track {
+    width: 34px; height: 19px; border-radius: 999px; background: var(--panel-2);
+    border: 1px solid var(--border); position: relative; transition: background .2s ease, border-color .2s ease;
+  }
+  .toggle-thumb {
+    position: absolute; top: 1px; left: 1px; width: 15px; height: 15px; border-radius: 50%;
+    background: var(--text-muted); transition: transform .2s ease, background .2s ease;
+  }
+  .storage-toggle input:checked + .toggle-track { background: rgba(139,92,246,0.35); border-color: var(--violet); }
+  .storage-toggle input:checked + .toggle-track .toggle-thumb { transform: translateX(15px); background: var(--violet); }
+
+  /* ---------- Toasts ---------- */
+  .toast-wrap { position: fixed; top: 1rem; right: 1rem; display: flex; flex-direction: column; gap: .5rem; z-index: 9999; max-width: 320px; }
+  .toast {
+    display: flex; align-items: flex-start; gap: 10px;
+    background: var(--panel); border: 1px solid var(--border); border-left: 3px solid var(--info);
+    border-radius: var(--radius-sm); padding: 12px 12px;
+    box-shadow: var(--shadow-tight);
+    transform: translateX(120%); opacity: 0;
+    transition: transform .3s cubic-bezier(.16,1,.3,1), opacity .3s ease;
+    font-size: 13px; cursor: default;
+  }
+  .toast.show { transform: translateX(0); opacity: 1; }
+  .toast.hide { transform: translateX(120%); opacity: 0; }
+  .toast--success { border-left-color: var(--success); }
+  .toast--error { border-left-color: var(--danger); }
+  .toast--info { border-left-color: var(--info); }
+  .toast i:first-child { margin-top: 1px; }
+  .toast--success i:first-child { color: var(--success); }
+  .toast--error i:first-child { color: var(--danger); }
+  .toast--info i:first-child { color: var(--info); }
+  .toast-msg { flex: 1; }
+  .toast-close { background: none; border: none; color: var(--text-faint); padding: 0; display: flex; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .toast { transition: opacity .2s ease; transform: none !important; }
+  }
+
+  /* ---------- Crash screen ---------- */
+  .crash-screen {
+    min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 14px; text-align: center; padding: 32px; color: var(--text);
+  }
+  .crash-screen i { font-size: 34px; color: var(--danger); }
+  .crash-screen p { color: var(--text-muted); max-width: 420px; }
+
+  @media (max-width: 760px) {
+    .card-grid { grid-template-columns: 1fr; }
+    .stats-row { gap: 32px; }
+    .topbar { padding: 14px 18px; }
+    main { padding: 0 18px; }
+    .hero { padding: 64px 0 48px; }
+    .nav-btn span:not(.count-pill) { display: none; }
+  }
+</style>
+</head>
+<body>
+<div id="root">
+  <div style="min-height:100vh;display:flex;align-items:center;justify-content:center;color:#9A9CA6;font-family:Inter,sans-serif;font-size:14px;">
+    Loading Vellum…
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.7/babel.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/countup.js@2.10.0/dist/countUp.umd.js"></script>
+
+<script type="text/babel" data-presets="react">
+
+var DB_NAME = 'vellum-db';
+var STORE_NAME = 'files';
+
+function dbOpen() {
+  return new Promise(function (resolve, reject) {
+    try {
+      var req = indexedDB.open(DB_NAME, 1);
+      req.onupgradeneeded = function () {
+        var db = req.result;
+        if (!db.objectStoreNames.contains(STORE_NAME)) {
+          db.createObjectStore(STORE_NAME, { keyPath: 'id' });
+        }
+      };
+      req.onsuccess = function () { resolve(req.result); };
+      req.onerror = function () { reject(req.error); };
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
+
+async function dbPut(record) {
+  var db = await dbOpen();
+  return new Promise(function (resolve, reject) {
+    try {
+      var tx = db.transaction(STORE_NAME, 'readwrite');
+      tx.objectStore(STORE_NAME).put(record);
+      tx.oncomplete = function () { resolve(); };
+      tx.onerror = function () { reject(tx.error); };
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
+
+async function dbGetAll() {
+  var db = await dbOpen();
+  return new Promise(function (resolve, reject) {
+    try {
+      var tx = db.transaction(STORE_NAME, 'readonly');
+      var req = tx.objectStore(STORE_NAME).getAll();
+      req.onsuccess = function () { resolve(req.result || []); };
+      req.onerror = function () { reject(req.error); };
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
+
+async function dbDelete(id) {
+  var db = await dbOpen();
+  return new Promise(function (resolve, reject) {
+    try {
+      var tx = db.transaction(STORE_NAME, 'readwrite');
+      tx.objectStore(STORE_NAME).delete(id);
+      tx.oncomplete = function () { resolve(); };
+      tx.onerror = function () { reject(tx.error); };
+    } catch (err) {
+      reject(err);
+    }
+  });
+}
+
+function genId() {
+  try {
+    if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+      return window.crypto.randomUUID();
+    }
+  } catch (e) {}
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+    var r = (Math.random() * 16) | 0;
+    var v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
+function App() {
+  var _files = React.useState([]), files = _files[0], setFiles = _files[1];
+  var _uploads = React.useState([]), uploads = _uploads[0], setUploads = _uploads[1];
+
+  React.useEffect(function () {
+    (async function () {
+      try {
+        var all = await dbGetAll();
+        setFiles(all || []);
+      } catch (err) {
+        console.error('Failed to load files', err);
+        setFiles([]);
+        showToast('Could not load saved files', 'error');
+      }
+    })();
+  }, []);
+
+  function updateUpload(id, patch) {
+    setUploads(function (list) { return list.map(function (u) { return u.id === id ? Object.assign({}, u, patch) : u; }); });
+    if (patch.status === 'done' || patch.status === 'error') {
+      setTimeout(function () {
+        setUploads(function (list) { return list.filter(function (u) { return u.id !== id; }); });
+      }, 2600);
+    }
+  }
+
+  function animateProgress(id, cb) {
+    var pct = 0;
+    var timer = setInterval(function () {
+      pct += Math.random() * 18 + 8;
+      if (pct >= 90) {
+        pct = 90;
+        clearInterval(timer);
+        setUploads(function (list) { return list.map(function (u) { return u.id === id ? Object.assign({}, u, { progress: Math.round(pct) }) : u; }); });
+        cb();
+        return;
+      }
+      setUploads(function (list) { return list.map(function (u) { return u.id === id ? Object.assign({}, u, { progress: Math.round(pct) }) : u; }); });
+    }, 120);
+  }
+
+  function uploadFile(file) {
+    var MAX_SIZE = 150 * 1024 * 1024;
+    if (file.size > MAX_SIZE) {
+      showToast(file.name + ' is too large (150 MB max)', 'error');
+      return;
+    }
+    var id = genId();
+    setUploads(function (list) { return list.concat([{ id: id, name: file.name, progress: 0, status: 'uploading' }]); });
+    animateProgress(id, async function () {
+      var isZip = /\.zip$/i.test(file.name);
+      try {
+        if (isZip) {
+          await processZipFile(file, id);
+        } else {
+          var record = {
+            id: id, name: file.name, type: file.type || 'text/html', size: file.size, blob: file,
+            isZip: false, zipFiles: null, indexHtmlPath: null,
+            addedAt: Date.now(), openCount: 0, trashed: false, trashedAt: null, allowStorage: false
+          };
+          await dbPut(record);
+          setFiles(function (fs) { return fs.concat([record]); });
+          updateUpload(id, { progress: 100, status: 'done' });
+          showToast(file.name + ' saved', 'success');
+        }
+      } catch (err) {
+        console.error(err);
+        updateUpload(id, { status: 'error' });
+        showToast('Could not save ' + file.name, 'error');
+      }
+    });
+  }
+
+  async function processZipFile(zipBlob, id) {
+    try {
+      if (!window.JSZip) {
+        throw new Error('JSZip library not loaded');
+      }
+      var zip = new window.JSZip();
+      await zip.loadAsync(zipBlob);
+      
+      var zipFiles = {};
+      var indexHtmlPath = null;
+      
+      var promises = [];
+      zip.forEach(function (path, file) {
+        if (file.dir || path.includes('__MACOSX')) return;
+        
+        promises.push(file.async('blob').then(function (blob) {
+          zipFiles[path] = blob;
+          if (!indexHtmlPath && (/index\.html?$/i.test(path))) {
+            indexHtmlPath = path;
+          }
+        }));
+      });
+      
+      await Promise.all(promises);
+      
+      if (!indexHtmlPath) {
+        throw new Error('ZIP does not contain index.html or index.htm');
+      }
+      
+      var record = {
+        id: id, name: zipBlob.name, type: 'application/zip', size: zipBlob.size, blob: zipBlob,
+        isZip: true, zipFiles: zipFiles, indexHtmlPath: indexHtmlPath,
+        addedAt: Date.now(), openCount: 0, trashed: false, trashedAt: null, allowStorage: false
+      };
+      
+      await dbPut(record);
+      setFiles(function (fs) { return fs.concat([record]); });
+      updateUpload(id, { progress: 100, status: 'done' });
+      showToast(zipBlob.name + ' saved as project', 'success');
+    } catch (err) {
+      console.error('ZIP processing error:', err);
+      throw err;
+    }
+  }
+
+  function handleFiles(list) {
+    if (!list || !list.length) return;
+    Array.prototype.forEach.call(list, function (f) {
+      var isHtml = /\.html?$/i.test(f.name) || f.type === 'text/html';
+      var isZip = /\.zip$/i.test(f.name);
+      if (!isHtml && !isZip) { showToast(f.name + ' must be .html, .htm, or .zip', 'error'); return; }
+      uploadFile(f);
+    });
+  }
+
+  var fileInputRef = React.useRef(null);
+  var _drag = React.useState(false), dragOver = _drag[0], setDragOver = _drag[1];
+  var _search = React.useState(''), search = _search[0], setSearch = _search[1];
+  var _drawer = React.useState(null), drawer = _drawer[0], setDrawer = _drawer[1];
+  var _preview = React.useState(null),
+    preview = _preview[0], setPreview = _preview[1];
+  var _confirm = React.useState(null), confirmId = _confirm[0], setConfirmId = _confirm[1];
+
+  var activeFiles = files.filter(function (f) { return !f.trashed; });
+  var trashedFiles = files.filter(function (f) { return f.trashed; });
+
+  function sortList(list) {
+    return list.slice().sort(function (a, b) {
+      if ((b.openCount || 0) !== (a.openCount || 0)) return (b.openCount || 0) - (a.openCount || 0);
+      return a.name.localeCompare(b.name);
+    });
+  }
+
+  var visibleSaved = sortList(activeFiles).filter(function (f) {
+    return f.name.toLowerCase().indexOf(search.toLowerCase()) !== -1;
+  });
+  var visibleTrash = sortList(trashedFiles);
+
+  var totalSize = activeFiles.reduce(function (sum, f) { return sum + (f.size || 0); }, 0);
+  var totalOpens = files.reduce(function (sum, f) { return sum + (f.openCount || 0); }, 0);
+
+  async function openFile(f) {
+    try {
+      var updated = Object.assign({}, f, { openCount: (f.openCount || 0) + 1 });
+      await dbPut(updated);
+      setFiles(function (fs) { return fs.map(function (x) { return x.id === f.id ? updated : x; }); });
+      
+      var url;
+      var blobUrls = {};
+      
+      if (updated.isZip && updated.zipFiles) {
+        var htmlBlob = updated.zipFiles[updated.indexHtmlPath];
+        if (!htmlBlob) throw new Error('index.html not found');
+        
+        var htmlText = await blobToText(htmlBlob);
+        var processedHtml = processZipHtml(htmlText, updated.zipFiles, blobUrls, updated.indexHtmlPath);
+        var processedBlob = new Blob([processedHtml], { type: 'text/html; charset=utf-8' });
+        url = URL.createObjectURL(processedBlob);
+      } else {
+        url = URL.createObjectURL(updated.blob);
+      }
+      
+      setPreview({ file: updated, allowStorage: !!updated.allowStorage, url: url, blobUrls: blobUrls });
+      setDrawer(null);
+    } catch (err) {
+      console.error(err);
+      showToast('Could not open ' + f.name + ': ' + err.message, 'error');
+    }
+  }
+
+  function blobToText(blob) {
+    return new Promise(function (resolve, reject) {
+      var reader = new FileReader();
+      reader.onload = function () { resolve(reader.result); };
+      reader.onerror = function () { reject(reader.error); };
+      reader.readAsText(blob);
+    });
+  }
+
+  function processZipHtml(html, zipFiles, blobUrls, basePath) {
+    var baseDir = basePath.split('/').slice(0, -1).join('/');
+    var parser = new DOMParser();
+    var doc = parser.parseFromString(html, 'text/html');
+    
+    function resolvePath(relPath) {
+      if (relPath.startsWith('http://') || relPath.startsWith('https://') || relPath.startsWith('//')) {
+        return relPath;
+      }
+      
+      var parts = baseDir.split('/').filter(Boolean);
+      var target = relPath.split('/');
+      
+      while (target[0] === '..') {
+        target.shift();
+        parts.pop();
+      }
+      
+      while (target[0] === '.' || target[0] === '') {
+        target.shift();
+      }
+      
+      var resolvedPath = (parts.length > 0 ? parts.join('/') + '/' : '') + target.join('/');
+      return resolvedPath;
+    }
+
+    function createBlobUrl(path) {
+      if (blobUrls[path]) return blobUrls[path];
+      var blob = zipFiles[path];
+      if (!blob) return null;
+      var blobUrl = URL.createObjectURL(blob);
+      blobUrls[path] = blobUrl;
+      return blobUrl;
+    }
+
+    Array.from(doc.querySelectorAll('script[src], link[href], img[src], video[src], audio[src], source[src], iframe[src]')).forEach(function (el) {
+      var attr = el.getAttribute('src') || el.getAttribute('href');
+      if (!attr) return;
+      var resolved = resolvePath(attr);
+      var blobUrl = createBlobUrl(resolved);
+      if (blobUrl) {
+        if (el.hasAttribute('src')) el.setAttribute('src', blobUrl);
+        if (el.hasAttribute('href')) el.setAttribute('href', blobUrl);
+      }
+    });
+
+    Array.from(doc.querySelectorAll('a[href]')).forEach(function (el) {
+      var href = el.getAttribute('href');
+      if (href && !href.startsWith('#') && !href.startsWith('http') && !href.startsWith('//') && /\.html?$/i.test(href)) {
+        var resolved = resolvePath(href);
+        var blobUrl = createBlobUrl(resolved);
+        if (blobUrl) el.setAttribute('href', blobUrl);
+      }
+    });
+
+    Array.from(doc.querySelectorAll('[srcset]')).forEach(function (el) {
+      var srcset = el.getAttribute('srcset');
+      if (!srcset) return;
+      var updated = srcset.split(',').map(function (part) {
+        var pieces = part.trim().split(/\s+/);
+        var src = pieces[0];
+        var descriptor = pieces.slice(1).join(' ');
+        var resolved = resolvePath(src);
+        var blobUrl = createBlobUrl(resolved);
+        return (blobUrl || src) + (descriptor ? ' ' + descriptor : '');
+      }).join(', ');
+      el.setAttribute('srcset', updated);
+    });
+
+    var styleElements = doc.querySelectorAll('style');
+    for (var i = 0; i < styleElements.length; i++) {
+      var style = styleElements[i];
+      if (style.textContent) {
+        style.textContent = processZipCss(style.textContent, resolvePath, createBlobUrl);
+      }
+    }
+
+    return doc.documentElement.outerHTML;
+  }
+
+  function processZipCss(css, resolvePath, createBlobUrl) {
+    return css.replace(/url\s*\(\s*["']?([^"')]+)["']?\s*\)/g, function (match, url) {
+      if (url.startsWith('http://') || url.startsWith('https://') || url.startsWith('//') || url.startsWith('data:')) {
+        return match;
+      }
+      var resolved = resolvePath(url);
+      var blobUrl = createBlobUrl(resolved);
+      return 'url(' + (blobUrl || url) + ')';
+    });
+  }
+
+  function closePreview() {
+    if (preview) {
+      try { URL.revokeObjectURL(preview.url); } catch (e) {}
+      if (preview.blobUrls) {
+        Object.keys(preview.blobUrls).forEach(function (key) {
+          try { URL.revokeObjectURL(preview.blobUrls[key]); } catch (e) {}
+        });
+      }
+    }
+    setPreview(null);
+  }
+
+  async function togglePreviewStorage() {
+    if (!preview) return;
+    var next = !preview.allowStorage;
+    setPreview(Object.assign({}, preview, { allowStorage: next }));
+    try {
+      var updated = Object.assign({}, preview.file, { allowStorage: next });
+      await dbPut(updated);
+      setFiles(function (fs) { return fs.map(function (x) { return x.id === updated.id ? updated : x; }); });
+    } catch (err) {
+      console.error(err);
+      showToast('Could not save storage preference', 'error');
+    }
+  }
+
+  function openInNewTab() {
+    if (!preview) return;
+    var w = window.open(preview.url, '_blank', 'noopener');
+    if (!w) showToast('Pop-up blocked — allow pop-ups to open in a new tab', 'info');
+  }
+
+  async function moveToTrash(f) {
+    try {
+      var updated = Object.assign({}, f, { trashed: true, trashedAt: Date.now() });
+      await dbPut(updated);
+      setFiles(function (fs) { return fs.map(function (x) { return x.id === f.id ? updated : x; }); });
+      showToast(f.name + ' moved to trash', 'info');
+    } catch (err) {
+      console.error(err);
+      showToast('Could not delete ' + f.name, 'error');
+    }
+  }
+
+  async function restoreFile(f) {
+    try {
+      var updated = Object.assign({}, f, { trashed: false, trashedAt: null });
+      await dbPut(updated);
+      setFiles(function (fs) { return fs.map(function (x) { return x.id === f.id ? updated : x; }); });
+      showToast(f.name + ' restored', 'success');
+    } catch (err) {
+      console.error(err);
+      showToast('Could not restore ' + f.name, 'error');
+    }
+  }
+
+  async function deleteForever(id) {
+    try {
+      await dbDelete(id);
+      setFiles(function (fs) { return fs.filter(function (x) { return x.id !== id; }); });
+      showToast('File permanently deleted', 'success');
+    } catch (err) {
+      console.error(err);
+      showToast('Could not delete file', 'error');
+    } finally {
+      setConfirmId(null);
+    }
+  }
+
+  function fmtSize(n) {
+    if (!n) return '0 KB';
+    var kb = n / 1024;
+    if (kb < 1024) return kb.toFixed(1) + ' KB';
+    return (kb / 1024).toFixed(1) + ' MB';
+  }
+
+  function onDrop(e) {
+    e.preventDefault();
+    setDragOver(false);
+    handleFiles(e.dataTransfer.files);
+  }
+
+  return (
+    <React.Fragment>
+      <div className="scroll-progress" aria-hidden="true"></div>
+      <div className="ambient-glow" aria-hidden="true"></div>
+      <div className="ambient-glow ambient-glow--reverse" aria-hidden="true"></div>
+      <div className="cursor-glow" id="cursorGlow" aria-hidden="true"></div>
+
+      <header className="topbar">
+        <div className="brand">
+          <span className="brand-mark">V</span>
+          <span className="brand-name">Vellum</span>
+        </div>
+        <nav className="topnav">
+          <button className="nav-btn" onClick={function () { setDrawer('saved'); }}>
+            <i className="ti ti-folder"></i>
+            <span>Saved files</span>
+            <span className="count-pill">{activeFiles.length}</span>
+          </button>
+          <button className="nav-btn" onClick={function () { setDrawer('trash'); }}>
+            <i className="ti ti-trash"></i>
+            <span>Trash</span>
+            <span className="count-pill">{trashedFiles.length}</span>
+          </button>
+        </nav>
+      </header>
+
+      <main>
+        <section className="hero">
+          <p className="eyebrow reveal">Local-only · no accounts · no server</p>
+          <h1 id="scrambleHeadline" data-phrases="Your files. Your browser.|Nothing leaves this tab.|Open anything, safely.">
+            Your files. Your browser.
+          </h1>
+          <p className="hero-sub reveal">
+            Drop in any <em>.html</em> file or <em>.zip</em> website project and open it instantly in a sandboxed preview.
+            Everything is stored in <span className="accent-text">IndexedDB</span>, on this device only —
+            <i className="fraunces-italic"> nothing is ever uploaded.</i>
+          </p>
+
+          <div
+            className={'dropzone' + (dragOver ? ' dropzone--active' : '')}
+            onDragOver={function (e) { e.preventDefault(); setDragOver(true); }}
+            onDragLeave={function () { setDragOver(false); }}
+            onDrop={onDrop}
+          >
+            <i className="ti ti-upload dropzone-icon"></i>
+            <p>Drag &amp; drop an HTML file here, or</p>
+            <button className="btn btn-primary" onClick={function () { fileInputRef.current && fileInputRef.current.click(); }}>
+              <i className="ti ti-file-plus"></i>
+              Choose files
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".html,.htm,.zip,text/html,application/zip"
+              multiple
+              hidden
+              onChange={function (e) { handleFiles(e.target.files); e.target.value = ''; }}
+            />
+          </div>
+
+          <div className="stats-row reveal">
+            <div className="stat">
+              <span className="stat-num" data-to={activeFiles.length}>0</span>
+              <span className="stat-label">files stored</span>
+            </div>
+            <div className="stat">
+              <span className="stat-num" data-to={Math.round(totalSize / 1024)} data-suffix=" KB">0</span>
+              <span className="stat-label">total size</span>
+            </div>
+            <div className="stat">
+              <span className="stat-num" data-to={totalOpens}>0</span>
+              <span className="stat-label">times opened</span>
+            </div>
+          </div>
+        </section>
+
+        {uploads.length > 0 && (
+          <section className="upload-bar-wrap">
+            <div className="upload-bar-panel">
+              {uploads.map(function (u) {
+                return (
+                  <div className="upload-row" key={u.id}>
+                    <i className={u.status === 'error' ? 'ti ti-alert-circle upload-icon upload-icon--error' : /\.zip$/i.test(u.name) ? 'ti ti-folder-zip upload-icon' : 'ti ti-file-type-html upload-icon'}></i>
+                    <div className="upload-info">
+                      <span className="upload-name">{u.name}</span>
+                      <div className="upload-track">
+                        <div
+                          className={'upload-fill' + (u.status === 'error' ? ' upload-fill--error' : '')}
+                          style={{ width: u.progress + '%' }}
+                        ></div>
+                      </div>
+                    </div>
+                    <span className="upload-status">
+                      {u.status === 'done' ? <i className="ti ti-check"></i> : u.status === 'error' ? 'Failed' : u.progress + '%'}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        )}
+
+        <section className="how-it-works">
+          <h2 className="section-title reveal">How it stays yours</h2>
+          <p className="section-lead reveal">
+            <span className="fraunces-italic">"Nothing you open here ever leaves the tab."</span>
+          </p>
+          <div className="card-grid">
+            <div className="spotlight reveal">
+              <i className="ti ti-database spotlight-icon"></i>
+              <h3>Stored on-device</h3>
+              <p>Every file is written straight into your browser's IndexedDB. Close the tab, restart your machine — it's still here.</p>
+            </div>
+            <div className="spotlight reveal">
+              <i className="ti ti-shield-lock spotlight-icon"></i>
+              <h3>Sandboxed by default</h3>
+              <p>Previews run in an iframe with scripts allowed but storage access off, unless you explicitly flip it on for that file.</p>
+            </div>
+            <div className="spotlight reveal">
+              <i className="ti ti-trash-x spotlight-icon"></i>
+              <h3>Deletion means it</h3>
+              <p>Delete sends a file to Trash first. Deleting forever asks you to confirm, then wipes the record for good.</p>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <footer className="site-footer">
+        <div>
+          <span className="brand-mark brand-mark--sm">V</span>
+          <span>Vellum v1.0 · runs entirely in this browser</span>
+        </div>
+        <div className="footer-meta">
+          <span>Works best in Chromium, Firefox &amp; Safari with IndexedDB enabled</span>
+          <span>Storage is shared with your browser's quota — usually several hundred MB to a few GB</span>
+        </div>
+      </footer>
+
+      {drawer && (
+        <div className="drawer-backdrop" onClick={function () { setDrawer(null); }}>
+          <aside className={'drawer' + (drawer === 'trash' ? ' drawer--trash' : '')} onClick={function (e) { e.stopPropagation(); }}>
+            <div className="drawer-head">
+              <h2>{drawer === 'saved' ? 'Saved files' : 'Trash'}</h2>
+              <button className="icon-btn" onClick={function () { setDrawer(null); }} aria-label="Close">
+                <i className="ti ti-x"></i>
+              </button>
+            </div>
+
+            {drawer === 'saved' && (
+              <React.Fragment>
+                <div className="drawer-search">
+                  <i className="ti ti-search"></i>
+                  <input
+                    type="text"
+                    placeholder="Search saved files"
+                    value={search}
+                    onChange={function (e) { setSearch(e.target.value); }}
+                  />
+                </div>
+                <div className="drawer-list">
+                  {visibleSaved.length === 0 && <p className="drawer-empty">No files match yet.</p>}
+                  {visibleSaved.map(function (f) {
+                    return (
+                      <div className="file-row" key={f.id}>
+                        <i className={'ti ' + (f.isZip ? 'ti-folder-zip' : 'ti-file-type-html') + ' file-row-icon'}></i>
+                        <div className="file-row-info">
+                          <span className="file-row-name">{f.name}</span>
+                          <span className="file-row-meta">{fmtSize(f.size)} · opened {f.openCount || 0}×{f.isZip ? ' · project' : ''}</span>
+                        </div>
+                        <div className="file-row-actions">
+                          <button className="btn btn-ghost btn-sm" onClick={function () { openFile(f); }}>
+                            <i className="ti ti-player-play"></i> Open
+                          </button>
+                          <button className="btn btn-ghost btn-sm btn-danger" onClick={function () { moveToTrash(f); }}>
+                            <i className="ti ti-trash"></i>
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </React.Fragment>
+            )}
+
+            {drawer === 'trash' && (
+              <div className="drawer-list">
+                {visibleTrash.length === 0 && <p className="drawer-empty">Trash is empty.</p>}
+                {visibleTrash.map(function (f) {
+                  return (
+                    <div className="file-row" key={f.id}>
+                      <i className="ti ti-file-type-html file-row-icon"></i>
+                      <div className="file-row-info">
+                        <span className="file-row-name">{f.name}</span>
+                        <span className="file-row-meta">{fmtSize(f.size)} · trashed</span>
+                      </div>
+                      <div className="file-row-actions">
+                        {confirmId === f.id ? (
+                          <React.Fragment>
+                            <button className="btn btn-ghost btn-sm" onClick={function () { setConfirmId(null); }}>Cancel</button>
+                            <button className="btn btn-danger-solid btn-sm" onClick={function () { deleteForever(f.id); }}>Confirm</button>
+                          </React.Fragment>
+                        ) : (
+                          <React.Fragment>
+                            <button className="btn btn-ghost btn-sm" onClick={function () { restoreFile(f); }}>
+                              <i className="ti ti-arrow-back-up"></i> Restore
+                            </button>
+                            <button className="btn btn-ghost btn-sm btn-danger" onClick={function () { setConfirmId(f.id); }}>
+                              Delete forever
+                            </button>
+                          </React.Fragment>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </aside>
+        </div>
+      )}
+
+      {preview && (
+        <div className="preview-overlay">
+          <div className="preview-head">
+            <div className="preview-title">
+              <i className={'ti ' + (preview.file.isZip ? 'ti-folder-zip' : 'ti-file-type-html')}></i>
+              <span>{preview.file.name}</span>
+            </div>
+            <div className="preview-actions">
+              <label className="storage-toggle">
+                <input type="checkbox" checked={preview.allowStorage} onChange={togglePreviewStorage} onKeyDown={function (e) { if (e.code === 'Space') { e.preventDefault(); } }} />
+                <span className="toggle-track"><span className="toggle-thumb"></span></span>
+                <span>Allow storage access</span>
+              </label>
+              <button className="btn btn-ghost btn-sm" onClick={openInNewTab}>
+                <i className="ti ti-external-link"></i> Open in new tab
+              </button>
+              <button className="icon-btn" onClick={closePreview} aria-label="Close preview">
+                <i className="ti ti-x"></i>
+              </button>
+            </div>
+          </div>
+          <iframe
+            key={preview.file.id + '-' + preview.allowStorage}
+            className="preview-frame"
+            src={preview.url}
+            sandbox={preview.allowStorage ? 'allow-scripts allow-same-origin' : 'allow-scripts'}
+            title={preview.file.name}
+          ></iframe>
+        </div>
+      )}
+
+      <div className="toast-wrap" id="toastWrap"></div>
+    </React.Fragment>
+  );
+}
+
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false };
+  }
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+  componentDidCatch(err) {
+    console.error('App crashed:', err);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="crash-screen">
+          <i className="ti ti-alert-triangle"></i>
+          <h1>Something went wrong</h1>
+          <p>Vellum hit an unexpected error. Your saved files are untouched — try reloading the page.</p>
+          <button className="btn btn-primary" onClick={function () { window.location.reload(); }}>Reload</button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+var rootEl = document.getElementById('root');
+if (rootEl) {
+  var root = ReactDOM.createRoot(rootEl);
+  root.render(
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
+  );
+}
+</script>
+
+<script>
+document.documentElement.classList.add('js');
+
+// ---------- Toasts (vanilla, no CDN) ----------
+(function () {
+  var wrap = null;
+  function getWrap() {
+    if (!wrap || !document.body.contains(wrap)) {
+      wrap = document.getElementById('toastWrap');
+    }
+    return wrap;
+  }
+  var ICONS = { success: 'ti-circle-check', error: 'ti-alert-circle', info: 'ti-info-circle' };
+  window.showToast = function (msg, type) {
+    var t = type && ICONS[type] ? type : 'info';
+    var container = getWrap();
+    if (!container) return;
+    var el = document.createElement('div');
+    el.className = 'toast toast--' + t;
+    el.innerHTML = '<i class="ti ' + ICONS[t] + '"></i><span class="toast-msg"></span><button class="toast-close" aria-label="Dismiss"><i class="ti ti-x"></i></button>';
+    el.querySelector('.toast-msg').textContent = msg;
+    container.appendChild(el);
+    requestAnimationFrame(function () { el.classList.add('show'); });
+    function dismiss() {
+      el.classList.remove('show');
+      el.classList.add('hide');
+      setTimeout(function () { if (el.parentNode) el.parentNode.removeChild(el); }, 350);
+    }
+    el.querySelector('.toast-close').addEventListener('click', dismiss);
+    var timer = setTimeout(dismiss, 3500);
+    el.addEventListener('mouseenter', function () { clearTimeout(timer); });
+    el.addEventListener('mouseleave', function () { timer = setTimeout(dismiss, 1200); });
+  };
+})();
+
+var reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+// ---------- Scramble headline ----------
+(function () {
+  var el = document.getElementById('scrambleHeadline');
+  if (!el) return;
+  var chars = '!<>-_\\/[]{}=+*^?#';
+  var raw = el.getAttribute('data-phrases') || el.textContent || '';
+  var phrases = raw.split('|').filter(Boolean);
+  if (!phrases.length) phrases = [el.textContent || ''];
+  if (reduceMotion || phrases.length < 2) return;
+
+  var idx = 0;
+  var running = false;
+
+  function scrambleTo(text) {
+    if (running) return;
+    running = true;
+    var from = el.textContent || '';
+    var len = Math.max(from.length, text.length);
+    var start = null;
+    var perCharDelay = 18;
+
+    function frame(ts) {
+      if (start === null) start = ts;
+      var elapsed = ts - start;
+      var out = '';
+      for (var i = 0; i < len; i++) {
+        var target = text[i];
+        if (target === undefined) { continue; }
+        var charStart = i * perCharDelay;
+        if (elapsed < charStart) {
+          out += from[i] || ' ';
+        } else if (elapsed < charStart + 260) {
+          out += chars[Math.floor(Math.random() * chars.length)];
+        } else {
+          out += target;
+        }
+      }
+      el.textContent = out;
+      if (elapsed < len * perCharDelay + 260) {
+        requestAnimationFrame(frame);
+      } else {
+        el.textContent = text;
+        running = false;
+      }
+    }
+    requestAnimationFrame(frame);
+  }
+
+  setInterval(function () {
+    idx = (idx + 1) % phrases.length;
+    scrambleTo(phrases[idx]);
+  }, 3200);
+})();
+
+// ---------- Cursor glow overlay ----------
+(function () {
+  var glow = document.getElementById('cursorGlow');
+  if (!glow) return;
+  if (reduceMotion || matchMedia('(pointer: coarse)').matches) {
+    glow.style.display = 'none';
+    return;
+  }
+  var ticking = false;
+  var mx = 0, my = 0;
+  window.addEventListener('mousemove', function (e) {
+    mx = e.clientX; my = e.clientY;
+    if (!ticking) {
+      ticking = true;
+      requestAnimationFrame(function () {
+        document.body.style.setProperty('--mx', mx + 'px');
+        document.body.style.setProperty('--my', my + 'px');
+        ticking = false;
+      });
+    }
+  }, { passive: true });
+})();
+
+// ---------- Spotlight cards ----------
+(function () {
+  if (matchMedia('(pointer: coarse)').matches) return;
+  document.addEventListener('mousemove', function (e) {
+    var card = e.target.closest ? e.target.closest('.spotlight') : null;
+    if (!card) return;
+    var rect = card.getBoundingClientRect();
+    card.style.setProperty('--mx', (e.clientX - rect.left) + 'px');
+    card.style.setProperty('--my', (e.clientY - rect.top) + 'px');
+  }, { passive: true });
+})();
+
+// ---------- CountUp stats ----------
+window.addEventListener('load', function () {
+  try {
+    if (!window.countUp || !window.countUp.CountUp) return;
+    var targets = document.querySelectorAll('[data-to]');
+    var io = new IntersectionObserver(function (entries, obs) {
+      entries.forEach(function (entry) {
+        if (!entry.isIntersecting) return;
+        var el = entry.target;
+        var to = parseFloat(el.getAttribute('data-to') || '0');
+        var suffix = el.getAttribute('data-suffix') || '';
+        try {
+          new window.countUp.CountUp(el, to, { duration: 2.2, separator: ',', suffix: suffix }).start();
+        } catch (e) {}
+        obs.unobserve(el);
+      });
+    }, { threshold: 0.4 });
+    targets.forEach(function (el) { io.observe(el); });
+  } catch (e) {
+    console.error('CountUp init failed', e);
+  }
+});
+</script>
+
+<script id="__bld_reveal_failsafe">(function(){function r(){try{document.querySelectorAll('[data-aos],.reveal,.fade-in,.fade-up,.fade-left,.fade-right,.animate-on-scroll,[class*=reveal],[class*=fade-]').forEach(function(e){e.classList.add('aos-animate','is-visible','active','in-view','show','visible');e.style.opacity='1';e.style.transform='none';e.style.visibility='visible';});}catch(_){}}function c(){if(!(window.AOS&&document.querySelector('[data-aos].aos-init')))r();}setTimeout(c,2200);window.addEventListener('load',function(){setTimeout(c,2500);});})();</script>
+</body>
+</html>
