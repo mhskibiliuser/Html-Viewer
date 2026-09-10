@@ -1,4 +1,4 @@
-name: Add ZIP website support
+name: Patch Vellum ZIP support
 
 on:
   push:
@@ -12,21 +12,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Patch Vellum
+      - name: Patch index.html
         run: |
-          python3 <<'PY'
+          python3 - <<'PY'
           from pathlib import Path
           p = Path('index.html')
           s = p.read_text(encoding='utf-8')
 
-          if 'ZIP website import' not in s:
-              s = s.replace(
-                  '<script src="https://cdn.tailwindcss.com"></script>',
-                  '<script src="https://cdn.tailwindcss.com"></script>\n<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>'
-              )
+          if 'VELLUM_ZIP_SUPPORT_V1' in s:
+              print('ZIP support already installed')
+              raise SystemExit(0)
 
-              marker = "  function handleFiles(list) {"
-              helper = r'''  /* ZIP website import: the archive is never uploaded or permanently rewritten. */
+          s = s.replace(
+              '<script src="https://cdn.tailwindcss.com"></script>',
+              '<script src="https://cdn.tailwindcss.com"></script>\n<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>', 1)
+
+          marker = '  function handleFiles(list) {'
+          helper = r'''  /* VELLUM_ZIP_SUPPORT_V1: ZIP website projects are kept in IndexedDB unchanged; preview uses temporary blob URLs. */
   async function uploadZipFile(file) {
     if (file.size > 150 * 1024 * 1024) {
       showToast(file.name + ' is too large (150MB max)', 'error');
@@ -37,26 +39,21 @@ jobs:
     try {
       if (!window.JSZip) throw new Error('ZIP engine failed to load');
       var zip = await window.JSZip.loadAsync(file);
-      var entries = Object.keys(zip.files).filter(function (name) {
-        return !zip.files[name].dir && name.indexOf('__MACOSX/') !== 0;
-      });
-      if (!entries.length) throw new Error('The ZIP is empty');
-      var total = entries.length;
+      var names = Object.keys(zip.files).filter(function (n) { return !zip.files[n].dir && !/^__MACOSX\\//i.test(n); });
       var projectFiles = [];
-      var indexPath = null;
-      for (var i = 0; i < total; i++) {
-        var path = entries[i].replace(/^\.\//, '');
-        var blob = await zip.files[entries[i]].async('blob');
-        projectFiles.push({ path: path, blob: blob, type: blob.type || '' });
-        if (!indexPath && /(^|\/)index\.html?$/i.test(path)) indexPath = path;
-        setUploads(function (list) { return list.map(function (u) { return u.id === id ? Object.assign({}, u, { progress: Math.min(90, Math.round(((i + 1) / total) * 90)) }) : u; }); });
+      var entry = null;
+      for (var i = 0; i < names.length; i++) {
+        var path = names[i].replace(/^\\.\\//, '');
+        var blob = await zip.files[names[i]].async('blob');
+        projectFiles.push({ path: path, blob: blob });
+        if (!entry && /(^|\\/)index\\.html?$/i.test(path)) entry = path;
+        setUploads(function (list) { return list.map(function (u) { return u.id === id ? Object.assign({}, u, { progress: Math.round(((i + 1) / names.length) * 90) }) : u; }); });
       }
-      if (!indexPath) throw new Error('No index.html was found in the ZIP');
+      if (!entry) throw new Error('No index.html found in the ZIP');
       var record = {
         id: id, name: file.name, type: 'application/zip', size: file.size, blob: file,
-        projectFiles: projectFiles, entry: indexPath,
-        addedAt: Date.now(), openCount: 0, trashed: false, trashedAt: null, allowStorage: false,
-        isZipProject: true
+        projectFiles: projectFiles, entry: entry, isZipProject: true,
+        addedAt: Date.now(), openCount: 0, trashed: false, trashedAt: null, allowStorage: false
       };
       await dbPut(record);
       setFiles(function (fs) { return fs.concat([record]); });
@@ -69,76 +66,61 @@ jobs:
     }
   }
 
-  function zipPath(base, ref) {
+  function vellumZipResolve(base, ref, files) {
     try {
-      if (!ref || /^(data:|blob:|https?:|mailto:|javascript:|#)/i.test(ref)) return null;
-      var cleanBase = base.split('/').slice(0, -1).join('/') + '/';
-      var fake = new URL(ref, 'https://vellum.invalid/' + cleanBase);
-      var path = decodeURIComponent(fake.pathname).replace(/^\//, '');
-      var parts = path.split('/');
+      if (!ref || /^(data:|blob:|https?:|mailto:|javascript:|#|\\/\\/)/i.test(ref)) return null;
+      var clean = ref.split('#')[0].split('?')[0];
+      var dir = base.indexOf('/') >= 0 ? base.slice(0, base.lastIndexOf('/') + 1) : '';
+      var parts = (dir + clean).replace(/\\\\/g, '/').split('/');
       var out = [];
       parts.forEach(function (part) { if (!part || part === '.') return; if (part === '..') out.pop(); else out.push(part); });
-      return out.join('/');
+      var path = out.join('/');
+      if (files[path]) return path;
+      return null;
     } catch (e) { return null; }
   }
 
   async function buildZipPreview(record) {
-    var filesByPath = {};
-    (record.projectFiles || []).forEach(function (f) { filesByPath[f.path.replace(/^\.\//, '')] = f; });
+    var files = {};
+    (record.projectFiles || []).forEach(function (f) { files[f.path] = f; });
     var urls = {};
-    Object.keys(filesByPath).forEach(function (path) { urls[path] = URL.createObjectURL(filesByPath[path].blob); });
-
-    function resolveAsset(basePath, ref) {
-      var path = zipPath(basePath, ref);
-      if (!path || !filesByPath[path]) return ref;
-      return urls[path];
-    }
-
-    var indexFile = filesByPath[record.entry];
-    if (!indexFile) throw new Error('Entry HTML is missing');
-    var html = await indexFile.blob.text();
+    Object.keys(files).forEach(function (p) { urls[p] = URL.createObjectURL(files[p].blob); });
+    var entry = record.entry;
+    if (!files[entry]) throw new Error('ZIP entry HTML is missing');
+    var html = await files[entry].blob.text();
     var doc = new DOMParser().parseFromString(html, 'text/html');
-    var attrs = ['src', 'href', 'poster', 'data', 'srcset'];
-    Array.prototype.forEach.call(doc.querySelectorAll('[src],[href],[poster],[data],[srcset]'), function (el) {
-      attrs.forEach(function (attr) {
-        if (!el.hasAttribute(attr)) return;
-        var value = el.getAttribute(attr);
-        if (attr === 'srcset') {
-          value = value.split(',').map(function (part) {
-            var bits = part.trim().split(/\s+/); return resolveAsset(record.entry, bits[0]) + (bits.slice(1).length ? ' ' + bits.slice(1).join(' ') : '');
-          }).join(', ');
-        } else value = resolveAsset(record.entry, value);
-        el.setAttribute(attr, value);
-      });
-    });
-    Array.prototype.forEach.call(doc.querySelectorAll('[style]'), function (el) {
-      el.style.cssText = el.getAttribute('style').replace(/url\((['"]?)([^'")]+)\1\)/gi, function (_, q, ref) { return 'url("' + resolveAsset(record.entry, ref) + '")'; });
-    });
-
-    var cssPaths = Object.keys(filesByPath).filter(function (path) { return /\.css$/i.test(path); });
-    for (var c = 0; c < cssPaths.length; c++) {
-      var cp = cssPaths[c];
-      var css = await filesByPath[cp].blob.text();
-      css = css.replace(/url\((['"]?)([^'")]+)\1\)/gi, function (_, q, ref) { return 'url("' + resolveAsset(cp, ref) + '")'; });
-      var cssUrl = URL.createObjectURL(new Blob([css], { type: 'text/css' }));
-      urls[cp] = cssUrl;
-      Array.prototype.forEach.call(doc.querySelectorAll('link[href]'), function (el) {
-        var target = zipPath(record.entry, el.getAttribute('href'));
-        if (target === cp) el.setAttribute('href', cssUrl);
-      });
+    function asset(ref) {
+      var path = vellumZipResolve(entry, ref, files);
+      return path ? urls[path] : ref;
     }
-
-    var finalHtml = '<!doctype html>\n' + doc.documentElement.outerHTML;
-    var finalUrl = URL.createObjectURL(new Blob([finalHtml], { type: 'text/html' }));
-    return { url: finalUrl, extraUrls: Object.keys(urls).map(function (k) { return urls[k]; }).concat(finalUrl) };
+    Array.prototype.forEach.call(doc.querySelectorAll('[src],[href],[poster],[data],[srcset]'), function (el) {
+      ['src','href','poster','data'].forEach(function (a) { if (el.hasAttribute(a)) el.setAttribute(a, asset(el.getAttribute(a))); });
+      if (el.hasAttribute('srcset')) el.setAttribute('srcset', el.getAttribute('srcset').split(',').map(function (x) { var b = x.trim().split(/\\s+/); b[0] = asset(b[0]); return b.join(' '); }).join(', '));
+    });
+    Array.prototype.forEach.call(doc.querySelectorAll('[style]'), function (el) { el.setAttribute('style', el.getAttribute('style').replace(/url\\((['"]?)([^'")]+)\\1\\)/gi, function (m, q, r) { return 'url("' + asset(r) + '")'; })); });
+    var links = Array.prototype.slice.call(doc.querySelectorAll('link[rel~="stylesheet"][href]'));
+    for (var i = 0; i < links.length; i++) {
+      var cssPath = vellumZipResolve(entry, links[i].getAttribute('href'), files);
+      if (!cssPath) continue;
+      var css = await files[cssPath].blob.text();
+      css = css.replace(/url\\((['"]?)([^'")]+)\\1\\)/gi, function (m, q, r) {
+        var path = vellumZipResolve(cssPath, r, files);
+        return path ? 'url("' + urls[path] + '")' : m;
+      });
+      var cssUrl = URL.createObjectURL(new Blob([css], { type: 'text/css' }));
+      urls[cssPath] = cssUrl;
+      links[i].setAttribute('href', cssUrl);
+    }
+    var finalUrl = URL.createObjectURL(new Blob(['<!doctype html>\\n' + doc.documentElement.outerHTML], { type: 'text/html' }));
+    return { url: finalUrl, urls: Object.keys(urls).map(function (k) { return urls[k]; }).concat(finalUrl) };
   }
 
 '''
-              if marker not in s:
-                  raise SystemExit('handleFiles marker not found')
-              s = s.replace(marker, helper + marker, 1)
+          if marker not in s:
+              raise SystemExit('handleFiles marker not found')
+          s = s.replace(marker, helper + marker, 1)
 
-              old = '''  function handleFiles(list) {
+          old_handle = '''  function handleFiles(list) {
     if (!list || !list.length) return;
     Array.prototype.forEach.call(list, function (f) {
       var isHtml = /\\.html?$/i.test(f.name) || f.type === 'text/html';
@@ -146,54 +128,46 @@ jobs:
       uploadFile(f);
     });
   }'''
-              new = '''  function handleFiles(list) {
+          new_handle = '''  function handleFiles(list) {
     if (!list || !list.length) return;
     Array.prototype.forEach.call(list, function (f) {
-      if (/\\.zip$/i.test(f.name) || f.type === 'application/zip' || f.type === 'application/x-zip-compressed') {
-        uploadZipFile(f);
-        return;
-      }
+      var isZip = /\\.zip$/i.test(f.name) || f.type === 'application/zip' || f.type === 'application/x-zip-compressed';
+      if (isZip) { uploadZipFile(f); return; }
       var isHtml = /\\.html?$/i.test(f.name) || f.type === 'text/html';
       if (!isHtml) { showToast(f.name + ' is not an HTML or ZIP file', 'error'); return; }
       uploadFile(f);
     });
   }'''
-              if old not in s:
-                  raise SystemExit('handleFiles block not found')
-              s = s.replace(old, new, 1)
+          if old_handle not in s:
+              raise SystemExit('handleFiles block not found')
+          s = s.replace(old_handle, new_handle, 1)
 
-              old_open = '''      var url = URL.createObjectURL(updated.blob);
+          old_open = '''      var url = URL.createObjectURL(updated.blob);
       setPreview({ file: updated, allowStorage: !!updated.allowStorage, url: url, });'''
-              new_open = '''      var built = updated.isZipProject ? await buildZipPreview(updated) : { url: URL.createObjectURL(updated.blob), extraUrls: [] };
-      setPreview({ file: updated, allowStorage: !!updated.allowStorage, url: built.url, extraUrls: built.extraUrls });'''
-              if old_open not in s:
-                  raise SystemExit('openFile block not found')
-              s = s.replace(old_open, new_open, 1)
+          new_open = '''      var built = updated.isZipProject ? await buildZipPreview(updated) : { url: URL.createObjectURL(updated.blob), urls: [] };
+      setPreview({ file: updated, allowStorage: !!updated.allowStorage, url: built.url, urls: built.urls || [] });'''
+          if old_open not in s:
+              raise SystemExit('openFile block not found')
+          s = s.replace(old_open, new_open, 1)
 
-              old_close = '''    if (preview) { try { URL.revokeObjectURL(preview.url); } catch (e) {} }'''
-              new_close = '''    if (preview) {
-      (preview.extraUrls || [preview.url]).forEach(function (u) { try { URL.revokeObjectURL(u); } catch (e) {} });
-    }'''
-              if old_close not in s:
-                  raise SystemExit('closePreview block not found')
-              s = s.replace(old_close, new_close, 1)
+          old_close = '''    if (preview) { try { URL.revokeObjectURL(preview.url); } catch (e) {} }'''
+          new_close = '''    if (preview) { (preview.urls || [preview.url]).forEach(function (u) { try { URL.revokeObjectURL(u); } catch (e) {} }); }'''
+          if old_close not in s:
+              raise SystemExit('closePreview block not found')
+          s = s.replace(old_close, new_close, 1)
 
-              s = s.replace('Drop in any <em>.html</em> file and open it instantly in a sandboxed preview.', 'Drop in an <em>.html</em> file or a <em>.zip</em> website project and open it instantly in a sandboxed preview.')
-              s = s.replace('Drag &amp; drop an HTML file here, or', 'Drag &amp; drop an HTML or ZIP website here, or')
-              s = s.replace('accept=".html,.htm,text/html"', 'accept=".html,.htm,.zip,text/html,application/zip"')
-              s = s.replace('ZIP website import', 'ZIP website import')
-
-              p.write_text(s, encoding='utf-8')
-          else:
-              print('ZIP support already present')
+          s = s.replace('Drop in any <em>.html</em> file and open it instantly in a sandboxed preview.', 'Drop in an <em>.html</em> file or a <em>.zip</em> website project and open it instantly in a sandboxed preview.')
+          s = s.replace('Drag &amp; drop an HTML file here, or', 'Drag &amp; drop an HTML or ZIP website here, or')
+          s = s.replace('accept=".html,.htm,text/html"', 'accept=".html,.htm,.zip,text/html,application/zip"')
+          p.write_text(s, encoding='utf-8')
           PY
-      - name: Commit patch
+      - name: Commit patched index
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add index.html
           if git diff --cached --quiet; then
-            echo "No changes to commit"
+            echo "No index changes"
           else
             git commit -m "Add 150MB ZIP website importer"
             git push
