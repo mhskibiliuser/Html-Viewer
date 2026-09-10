@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
-<head><script id="__bld_reveal_failsafe_shim">(function(){function mk(){var s={};return{getItem:function(k){return Object.prototype.hasOwnProperty.call(s,k)?s[k]:null;},setItem:function(k,v){s[k]=''+v;},removeItem:function(k){delete s[k];},clear:function(){s={};},key:function(i){return Object.keys(s)[i]||null;},get length(){return Object.keys(s).length;}};}['localStorage','sessionStorage'].forEach(function(n){try{var t=window[n];t&&t.getItem;}catch(e){try{Object.defineProperty(window,n,{value:mk(),configurable:true});}catch(_){}}});})();</script>
+<head><script id="__bld_reveal_failsafe_shim">(function(){function mk(){var s={};return{getItem:function(k){return Object.prototype.hasOwnProperty.call(s,k)?s[k]:null;},setItem:function(k,v){s[k]=''+v;},removeItem:function(k){delete s[k];},clear:function(){s={};},key:function(i){return Object.keys(s)[i]||null;},get length(){return Object.keys(s).length;}};}['localStorage','sessionStorage'].forEach(function(n){try{var t=window[n];t&&t.getItem;}catch(e){try{Object.defineProperty(window,n,{value:mk(),configurable:true});}catch(_){}}});})();/* VELLUM_ZIP_SAVE_FIX_V3 */
+</script>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Vellum — local HTML file viewer</title>
@@ -416,12 +417,14 @@ async function dbPut(record) {
   return new Promise(function (resolve, reject) {
     try {
       var tx = db.transaction(STORE_NAME, 'readwrite');
-      tx.objectStore(STORE_NAME).put(record);
-      tx.oncomplete = function () { resolve(); };
-      tx.onerror = function () { reject(tx.error); };
-    } catch (err) {
-      reject(err);
-    }
+      var req = tx.objectStore(STORE_NAME).put(record);
+      var settled = false;
+      function fail(err) { if (!settled) { settled = true; reject(err || new Error('IndexedDB write failed')); } }
+      req.onerror = function () { fail(req.error); };
+      tx.oncomplete = function () { if (!settled) { settled = true; resolve(); } };
+      tx.onerror = function () { fail(tx.error || req.error); };
+      tx.onabort = function () { fail(tx.error || req.error || new Error('IndexedDB transaction aborted')); };
+    } catch (err) { reject(err); }
   });
 }
 
@@ -540,48 +543,23 @@ function App() {
   }
 
   async function processZipFile(zipBlob, id) {
-    try {
-      if (!window.JSZip) {
-        throw new Error('JSZip library not loaded');
-      }
-      var zip = new window.JSZip();
-      await zip.loadAsync(zipBlob);
-      
-      var zipFiles = {};
-      var indexHtmlPath = null;
-      
-      var promises = [];
-      zip.forEach(function (path, file) {
-        if (file.dir || path.includes('__MACOSX')) return;
-        
-        promises.push(file.async('blob').then(function (blob) {
-          zipFiles[path] = blob;
-          if (!indexHtmlPath && (/index\.html?$/i.test(path))) {
-            indexHtmlPath = path;
-          }
-        }));
-      });
-      
-      await Promise.all(promises);
-      
-      if (!indexHtmlPath) {
-        throw new Error('ZIP does not contain index.html or index.htm');
-      }
-      
-      var record = {
-        id: id, name: zipBlob.name, type: 'application/zip', size: zipBlob.size, blob: zipBlob,
-        isZip: true, zipFiles: zipFiles, indexHtmlPath: indexHtmlPath,
-        addedAt: Date.now(), openCount: 0, trashed: false, trashedAt: null, allowStorage: false
-      };
-      
-      await dbPut(record);
-      setFiles(function (fs) { return fs.concat([record]); });
-      updateUpload(id, { progress: 100, status: 'done' });
-      showToast(zipBlob.name + ' saved as project', 'success');
-    } catch (err) {
-      console.error('ZIP processing error:', err);
-      throw err;
-    }
+    if (!window.JSZip) throw new Error('JSZip library not loaded');
+    if (zipBlob.size > 150 * 1024 * 1024) throw new Error('ZIP is too large (150 MB max)');
+    var zip = await window.JSZip.loadAsync(zipBlob);
+    var indexHtmlPath = null;
+    zip.forEach(function(path, file) {
+      if (!file.dir && !/^__MACOSX\//i.test(path) && !indexHtmlPath && /(^|\/)index\.html?$/i.test(path)) indexHtmlPath = path.replace(/^\.\//,'');
+    });
+    if (!indexHtmlPath) throw new Error('ZIP does not contain index.html or index.htm');
+    var record = {
+      id: id, name: zipBlob.name, type: 'application/zip', size: zipBlob.size, blob: zipBlob,
+      isZip: true, zipFiles: null, indexHtmlPath: indexHtmlPath,
+      addedAt: Date.now(), openCount: 0, trashed: false, trashedAt: null, allowStorage: false
+    };
+    await dbPut(record);
+    setFiles(function(fs) { return fs.concat([record]); });
+    updateUpload(id, {progress:100, status:'done'});
+    showToast(zipBlob.name + ' saved as project', 'success');
   }
 
   function handleFiles(list) {
@@ -622,30 +600,38 @@ function App() {
 
   async function openFile(f) {
     try {
-      var updated = Object.assign({}, f, { openCount: (f.openCount || 0) + 1 });
+      var updated = Object.assign({}, f, {openCount:(f.openCount || 0) + 1});
       await dbPut(updated);
-      setFiles(function (fs) { return fs.map(function (x) { return x.id === f.id ? updated : x; }); });
-      
+      setFiles(function(fs) { return fs.map(function(x) { return x.id === f.id ? updated : x; }); });
       var url;
       var blobUrls = {};
-      
-      if (updated.isZip && updated.zipFiles) {
-        var htmlBlob = updated.zipFiles[updated.indexHtmlPath];
-        if (!htmlBlob) throw new Error('index.html not found');
-        
-        var htmlText = await blobToText(htmlBlob);
-        var processedHtml = processZipHtml(htmlText, updated.zipFiles, blobUrls, updated.indexHtmlPath);
-        var processedBlob = new Blob([processedHtml], { type: 'text/html; charset=utf-8' });
-        url = URL.createObjectURL(processedBlob);
+      if (updated.isZip) {
+        if (!window.JSZip) throw new Error('JSZip library not loaded');
+        var zip = await window.JSZip.loadAsync(updated.blob);
+        var zipFiles = {};
+        var jobs = [];
+        zip.forEach(function(path, file) {
+          if (file.dir || /^__MACOSX\//i.test(path)) return;
+          var clean = path.replace(/^\.\//,'');
+          jobs.push(file.async('blob').then(function(blob) { zipFiles[clean] = blob; }));
+        });
+        await Promise.all(jobs);
+        var entry = updated.indexHtmlPath || Object.keys(zipFiles).find(function(p){ return /(^|\/)index\.html?$/i.test(p); });
+        if (!entry || !zipFiles[entry]) throw new Error('index.html not found in saved ZIP');
+        var htmlText = await blobToText(zipFiles[entry]);
+        var processedHtml = processZipHtml(htmlText, zipFiles, blobUrls, entry);
+        url = URL.createObjectURL(new Blob([processedHtml], {type:'text/html; charset=utf-8'}));
       } else {
         url = URL.createObjectURL(updated.blob);
       }
-      
-      setPreview({ file: updated, allowStorage: !!updated.allowStorage, url: url, blobUrls: blobUrls });
+      setPreview({file:updated, allowStorage:!!updated.allowStorage, url:url, blobUrls:blobUrls});
       setDrawer(null);
     } catch (err) {
       console.error(err);
-      showToast('Could not open ' + f.name + ': ' + err.message, 'error');
+      var reason = err && (err.name === 'QuotaExceededError' || /quota|storage/i.test(err.message || ''))
+        ? 'Not enough browser storage to save this project'
+        : (err && err.message ? err.message : 'unknown error');
+      showToast('Could not open/save ' + f.name + ': ' + reason, 'error');
     }
   }
 
