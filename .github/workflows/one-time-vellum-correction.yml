@@ -1,0 +1,13 @@
+name: One time Vellum correction
+on: [push]
+permissions:
+  contents: write
+jobs:
+  fix:
+    if: ${{ !contains(github.event.head_commit.message, 'Vellum 150MB correction') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sed -E -i 's/[0-9]+50 \* 1024 \* 1024/150 * 1024 * 1024/g' index.html
+      - run: git config user.name github-actions[bot] && git config user.email 41898282+github-actions[bot]@users.noreply.github.com && git add index.html && git diff --cached --quiet || git commit -m 'Vellum 150MB correction'
+      - run: git push
