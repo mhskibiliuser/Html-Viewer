@@ -1,14 +1,15 @@
 {
   "name": "html-viewer",
   "version": "1.0.0",
-  "description": "HTML Viewer Application",
+  "description": "Vellum — local HTML file viewer",
+  "private": true,
   "scripts": {
-    "start": "node server.js",
-    "dev": "node server.js",
-    "http-server": "http-server -p 8080 -c-1"
+    "dev": "vite --host 0.0.0.0",
+    "start": "vite --host 0.0.0.0",
+    "build": "vite build",
+    "preview": "vite preview --host 0.0.0.0"
   },
-  "dependencies": {},
-  "devDependencies": {
-    "http-server": "^14.1.1"
+  "dependencies": {
+    "vite": "^7.1.5"
   }
 }
