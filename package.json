@@ -1,5 +1,14 @@
 {
   "name": "html-viewer",
   "version": "1.0.0",
-  "private": true
+  "description": "HTML Viewer Application",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "http-server": "http-server -p 8080 -c-1"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "http-server": "^14.1.1"
+  }
 }
