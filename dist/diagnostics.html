@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>HTML Viewer - Diagnostics</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .container {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            max-width: 600px;
+            width: 100%;
+            padding: 40px;
+        }
+        h1 { color: #333; margin-bottom: 30px; text-align: center; font-size: 28px; }
+        .status { 
+            background: #f0f9ff;
+            border-left: 4px solid #0284c7;
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+        .status.success {
+            background: #f0fdf4;
+            border-left-color: #16a34a;
+            color: #15803d;
+        }
+        .status.error {
+            background: #fef2f2;
+            border-left-color: #dc2626;
+            color: #991b1b;
+        }
+        .info-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            margin: 20px 0;
+        }
+        .info-item {
+            background: #f8f9fa;
+            padding: 12px;
+            border-radius: 6px;
+            border: 1px solid #dee2e6;
+        }
+        .info-label { font-weight: bold; color: #495057; font-size: 12px; }
+        .info-value { color: #212529; margin-top: 4px; font-family: monospace; word-break: break-all; }
+        .button {
+            background: #0284c7;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            margin-top: 20px;
+            width: 100%;
+            transition: background 0.3s;
+        }
+        .button:hover { background: #0369a1; }
+        .nav-links {
+            margin-top: 20px;
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        .nav-links a {
+            flex: 1;
+            min-width: 140px;
+            padding: 10px;
+            background: #e5e7eb;
+            color: #1f2937;
+            text-decoration: none;
+            border-radius: 4px;
+            text-align: center;
+            font-size: 13px;
+            font-weight: 500;
+            transition: background 0.3s;
+        }
+        .nav-links a:hover { background: #d1d5db; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>✓ Server is Working!</h1>
+        
+        <div class="status success">
+            <strong>Server Status:</strong> Online and responding
+        </div>
+        
+        <div class="info-grid">
+            <div class="info-item">
+                <div class="info-label">Hostname</div>
+                <div class="info-value" id="hostname">-</div>
+            </div>
+            <div class="info-item">
+                <div class="info-label">Protocol</div>
+                <div class="info-value" id="protocol">-</div>
+            </div>
+            <div class="info-item">
+                <div class="info-label">Port</div>
+                <div class="info-value" id="port">-</div>
+            </div>
+            <div class="info-item">
+                <div class="info-label">Timestamp</div>
+                <div class="info-value" id="timestamp">-</div>
+            </div>
+        </div>
+        
+        <div class="status">
+            <strong>✓ You can access the server!</strong><br>
+            The public GitHub Codespaces URL is working correctly.
+        </div>
+        
+        <div class="nav-links">
+            <a href="index.html">Main App</a>
+            <a href="/">Root</a>
+            <a href="/status.html">Status</a>
+        </div>
+    </div>
+
+    <script>
+        document.getElementById('hostname').textContent = window.location.hostname;
+        document.getElementById('protocol').textContent = window.location.protocol;
+        document.getElementById('port').textContent = window.location.port || '(default)';
+        document.getElementById('timestamp').textContent = new Date().toLocaleString();
+        
+        // Test API endpoints
+        console.log('Testing server diagnostics...');
+        console.log('Protocol:', window.location.protocol);
+        console.log('Hostname:', window.location.hostname);
+        console.log('Port:', window.location.port);
+        console.log('Full URL:', window.location.href);
+    </script>
+</body>
+</html>
