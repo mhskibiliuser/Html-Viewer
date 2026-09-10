@@ -1,2 +1,24 @@
-<!doctype html>
-<html><head><meta charset="utf-8"><title>Status</title></head><body><h1>Status</h1></body></html>
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Server Status - OK</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 50px; }
+        .success { color: green; font-size: 24px; font-weight: bold; }
+        .info { background: #f0f0f0; padding: 20px; margin-top: 20px; border-radius: 5px; }
+    </style>
+</head>
+<body>
+    <div class="success">✓ Server is working correctly!</div>
+    <div class="info">
+        <h3>Server Information:</h3>
+        <p>The HTTP server is running and serving files from /workspaces/Html-Viewer/</p>
+        <p>Port: 8080</p>
+        <p>Time: <span id="time"></span></p>
+        <p><a href="index.html">View Main HTML Viewer</a></p>
+    </div>
+    <script>
+        document.getElementById('time').textContent = new Date().toLocaleString();
+    </script>
+</body>
+</html>
