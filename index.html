@@ -511,7 +511,7 @@ function App() {
   }
 
   function uploadFile(file) {
-    var MAX_SIZE = 11150 * 1024 * 1024;
+    var MAX_SIZE = 111150 * 1024 * 1024;
     if (file.size > MAX_SIZE) {
       showToast(file.name + ' is too large (150 MB max)', 'error');
       return;
@@ -544,7 +544,7 @@ function App() {
 
   async function processZipFile(zipBlob, id) {
     if (!window.JSZip) throw new Error('JSZip library not loaded');
-    if (zipBlob.size > 11150 * 1024 * 1024) throw new Error('ZIP is too large (150 MB max)');
+    if (zipBlob.size > 111150 * 1024 * 1024) throw new Error('ZIP is too large (150 MB max)');
     var zip = await window.JSZip.loadAsync(zipBlob);
     var indexHtmlPath = null;
     zip.forEach(function(path, file) {
