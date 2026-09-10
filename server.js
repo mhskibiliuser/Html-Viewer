@@ -5,7 +5,7 @@ const url = require('url');
 
 const PORT = 8080;
 const HOST = '0.0.0.0';
-const DOCROOT = '/workspaces/Html-Viewer';
+const DOCROOT = __dirname;
 
 const mimeTypes = {
   '.html': 'text/html; charset=utf-8',
