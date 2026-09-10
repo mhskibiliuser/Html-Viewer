@@ -1,13 +1,89 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>About</title>
-  <link rel="stylesheet" href="../CSS/style.css">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>About - Test Website</title>
+    <link rel="stylesheet" href="../css/style.css">
 </head>
 <body>
-  <h1>About</h1>
-  <p>This is a test HTML Viewer page.</p>
+    <header>
+        <h1>📖 About</h1>
+        <nav>
+            <a href="../index.html">Home</a>
+            <a href="about.html">About</a>
+        </nav>
+    </header>
+
+    <main>
+        <section>
+            <h2>About This Project</h2>
+            <p>This is a test website created to verify Vellum's ZIP project support.</p>
+            <p>It demonstrates:</p>
+            <ul>
+                <li>✅ ZIP extraction with complete folder structure</li>
+                <li>✅ Relative path resolution across folders</li>
+                <li>✅ CSS stylesheet loading from css/style.css</li>
+                <li>✅ JavaScript execution from js/app.js</li>
+                <li>✅ Image loading from images/test.png</li>
+                <li>✅ Linking to pages in subfolders (pages/about.html)</li>
+                <li>✅ Navigation between HTML files in the project</li>
+            </ul>
+        </section>
+
+        <section>
+            <h2>File Structure</h2>
+            <pre>website-project.zip
+├── index.html
+├── css/
+│   └── style.css
+├── js/
+│   └── app.js
+├── images/
+│   └── test.png
+└── pages/
+    └── about.html</pre>
+        </section>
+
+        <section>
+            <h2>How It Works</h2>
+            <p>When you upload a ZIP file to Vellum:</p>
+            <ol>
+                <li>The ZIP is extracted entirely in the browser using JSZip</li>
+                <li>index.html is found and used as the entry point</li>
+                <li>All relative paths are resolved to extracted files</li>
+                <li>Blob URLs are created for each asset</li>
+                <li>The complete website is reconstructed and previewed</li>
+                <li>The entire project is saved in IndexedDB</li>
+            </ol>
+        </section>
+
+        <section>
+            <h2>Test Results</h2>
+            <p>Open the browser console (F12) to see test output from js/app.js</p>
+            <p>Check that:</p>
+            <ul>
+                <li>CSS styling is applied (purple gradient background)</li>
+                <li>Images display correctly</li>
+                <li>JavaScript console logs show successful file loading</li>
+                <li>Navigation links work between pages</li>
+            </ul>
+        </section>
+
+        <section>
+            <h2>Browser Console Output</h2>
+            <p>You should see messages like:</p>
+            <pre>✅ js/app.js loaded successfully!
+✅ CSS is applied. Body background: rgb(102, 126, 234)
+Images on page:
+  - blob:http://localhost/...</pre>
+        </section>
+    </main>
+
+    <footer>
+        <p>&copy; 2026 Vellum Test Project | All files are local</p>
+    </footer>
+
+    <script src="../js/app.js"></script>
 </body>
 </html>
