@@ -4,10 +4,14 @@
   var LIMIT = 16 * 1024 * 1024;
   var pending = Object.create(null);
 
+  function isLargeZipValue(value) {
+    return !!(value && value.isZip && value.blob && typeof value.blob.size === 'number' && value.blob.size >= LIMIT);
+  }
+
   function upload(id, blob) {
     var p = fetch('/__vellum_upload?id=' + encodeURIComponent(String(id)), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/zip' },
+      headers: { 'Content-Type': 'application/zip', 'X-Vellum-Size': String(blob.size) },
       body: blob
     }).then(function (r) {
       if (!r.ok) throw new Error('server upload failed: ' + r.status);
@@ -29,27 +33,25 @@
     });
   }
 
-  /* Large Blob values are replaced with a tiny marker before IndexedDB sees them. */
+  /* Replace large ZIP Blobs with a tiny IndexedDB-safe marker. */
   try {
     var oldPut = IDBObjectStore.prototype.put;
     if (!oldPut.__vellumLargePatch) {
       function put(value, key) {
-        try {
-          if (this.name === 'files' && value && value.isZip && value.blob instanceof Blob && value.blob.size >= LIMIT) {
-            var blob = value.blob;
-            var marker = Object.assign({}, value, {
-              blob: {
-                __vellumLargeZip: String(value.id),
-                size: blob.size,
-                name: blob.name || value.name || 'project.zip',
-                type: blob.type || 'application/zip'
-              }
-            });
-            upload(value.id, blob);
-            return arguments.length > 1 ? oldPut.call(this, marker, key) : oldPut.call(this, marker);
-          }
-        } catch (e) {
-          console.error('[Vellum] large-ZIP IndexedDB patch failed', e);
+        if (isLargeZipValue(value)) {
+          var blob = value.blob;
+          var id = String(value.id);
+          var marker = Object.assign({}, value, {
+            blob: {
+              __vellumLargeZip: id,
+              size: blob.size,
+              name: blob.name || value.name || 'project.zip',
+              type: blob.type || 'application/zip'
+            }
+          });
+          /* Start the server write before IndexedDB gets the marker. */
+          upload(id, blob);
+          return arguments.length > 1 ? oldPut.call(this, marker, key) : oldPut.call(this, marker);
         }
         return arguments.length > 1 ? oldPut.call(this, value, key) : oldPut.call(this, value);
       }
@@ -58,8 +60,7 @@
     }
   } catch (e) { console.error('[Vellum] could not patch IndexedDB', e); }
 
-  /* Also let Vellum recognise ZIPs that do not have a root index.html.
-     WintrChess is a source project; its analysis page is the useful entry point. */
+  /* Let Vellum recognise large source-project ZIPs without making JSZip parse them during upload. */
   function patchJSZip() {
     try {
       if (!window.JSZip || !window.JSZip.loadAsync) return false;
@@ -71,7 +72,7 @@
             return oldLoad.call(window.JSZip, blob, options);
           });
         }
-        if (data instanceof Blob && data.size >= LIMIT) {
+        if (data && typeof data.size === 'number' && data.size >= LIMIT) {
           var name = String(data.name || '').toLowerCase();
           if (name.indexOf('wintrchess') !== -1) {
             return Promise.resolve({
