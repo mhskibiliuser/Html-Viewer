@@ -1,4 +1,15 @@
-{
-  "name": "HTML Viewer",
-  "image": "mcr.microsoft.com/devcontainers/javascript-node:1-22-bookworm"
-}
+FROM mcr.microsoft.com/devcontainers/javascript-node:latest
+
+# Install http-server globally
+RUN npm install -g http-server
+
+# Set working directory
+WORKDIR /workspaces/Html-Viewer
+
+# Make start script executable
+COPY start-server.sh /start-server.sh
+RUN chmod +x /start-server.sh
+
+# Expose port 8080
+EXPOSE 8080
+
