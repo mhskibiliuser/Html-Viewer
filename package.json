@@ -6,6 +6,6 @@
   "scripts": {
     "dev": "node server.js",
     "start": "node server.js",
-    "build": "echo \"No build step needed\""
+    "build": "node build.js"
   }
 }
