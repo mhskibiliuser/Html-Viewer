@@ -1,0 +1,200 @@
+name: Add ZIP website support
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch Vellum
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          p = Path('index.html')
+          s = p.read_text(encoding='utf-8')
+
+          if 'ZIP website import' not in s:
+              s = s.replace(
+                  '<script src="https://cdn.tailwindcss.com"></script>',
+                  '<script src="https://cdn.tailwindcss.com"></script>\n<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>'
+              )
+
+              marker = "  function handleFiles(list) {"
+              helper = r'''  /* ZIP website import: the archive is never uploaded or permanently rewritten. */
+  async function uploadZipFile(file) {
+    if (file.size > 150 * 1024 * 1024) {
+      showToast(file.name + ' is too large (150MB max)', 'error');
+      return;
+    }
+    var id = genId();
+    setUploads(function (list) { return list.concat([{ id: id, name: file.name, progress: 0, status: 'uploading' }]); });
+    try {
+      if (!window.JSZip) throw new Error('ZIP engine failed to load');
+      var zip = await window.JSZip.loadAsync(file);
+      var entries = Object.keys(zip.files).filter(function (name) {
+        return !zip.files[name].dir && name.indexOf('__MACOSX/') !== 0;
+      });
+      if (!entries.length) throw new Error('The ZIP is empty');
+      var total = entries.length;
+      var projectFiles = [];
+      var indexPath = null;
+      for (var i = 0; i < total; i++) {
+        var path = entries[i].replace(/^\.\//, '');
+        var blob = await zip.files[entries[i]].async('blob');
+        projectFiles.push({ path: path, blob: blob, type: blob.type || '' });
+        if (!indexPath && /(^|\/)index\.html?$/i.test(path)) indexPath = path;
+        setUploads(function (list) { return list.map(function (u) { return u.id === id ? Object.assign({}, u, { progress: Math.min(90, Math.round(((i + 1) / total) * 90)) }) : u; }); });
+      }
+      if (!indexPath) throw new Error('No index.html was found in the ZIP');
+      var record = {
+        id: id, name: file.name, type: 'application/zip', size: file.size, blob: file,
+        projectFiles: projectFiles, entry: indexPath,
+        addedAt: Date.now(), openCount: 0, trashed: false, trashedAt: null, allowStorage: false,
+        isZipProject: true
+      };
+      await dbPut(record);
+      setFiles(function (fs) { return fs.concat([record]); });
+      updateUpload(id, { progress: 100, status: 'done' });
+      showToast(file.name + ' imported as a website', 'success');
+    } catch (err) {
+      console.error(err);
+      updateUpload(id, { status: 'error' });
+      showToast('Could not import ' + file.name + ': ' + (err.message || 'invalid ZIP'), 'error');
+    }
+  }
+
+  function zipPath(base, ref) {
+    try {
+      if (!ref || /^(data:|blob:|https?:|mailto:|javascript:|#)/i.test(ref)) return null;
+      var cleanBase = base.split('/').slice(0, -1).join('/') + '/';
+      var fake = new URL(ref, 'https://vellum.invalid/' + cleanBase);
+      var path = decodeURIComponent(fake.pathname).replace(/^\//, '');
+      var parts = path.split('/');
+      var out = [];
+      parts.forEach(function (part) { if (!part || part === '.') return; if (part === '..') out.pop(); else out.push(part); });
+      return out.join('/');
+    } catch (e) { return null; }
+  }
+
+  async function buildZipPreview(record) {
+    var filesByPath = {};
+    (record.projectFiles || []).forEach(function (f) { filesByPath[f.path.replace(/^\.\//, '')] = f; });
+    var urls = {};
+    Object.keys(filesByPath).forEach(function (path) { urls[path] = URL.createObjectURL(filesByPath[path].blob); });
+
+    function resolveAsset(basePath, ref) {
+      var path = zipPath(basePath, ref);
+      if (!path || !filesByPath[path]) return ref;
+      return urls[path];
+    }
+
+    var indexFile = filesByPath[record.entry];
+    if (!indexFile) throw new Error('Entry HTML is missing');
+    var html = await indexFile.blob.text();
+    var doc = new DOMParser().parseFromString(html, 'text/html');
+    var attrs = ['src', 'href', 'poster', 'data', 'srcset'];
+    Array.prototype.forEach.call(doc.querySelectorAll('[src],[href],[poster],[data],[srcset]'), function (el) {
+      attrs.forEach(function (attr) {
+        if (!el.hasAttribute(attr)) return;
+        var value = el.getAttribute(attr);
+        if (attr === 'srcset') {
+          value = value.split(',').map(function (part) {
+            var bits = part.trim().split(/\s+/); return resolveAsset(record.entry, bits[0]) + (bits.slice(1).length ? ' ' + bits.slice(1).join(' ') : '');
+          }).join(', ');
+        } else value = resolveAsset(record.entry, value);
+        el.setAttribute(attr, value);
+      });
+    });
+    Array.prototype.forEach.call(doc.querySelectorAll('[style]'), function (el) {
+      el.style.cssText = el.getAttribute('style').replace(/url\((['"]?)([^'")]+)\1\)/gi, function (_, q, ref) { return 'url("' + resolveAsset(record.entry, ref) + '")'; });
+    });
+
+    var cssPaths = Object.keys(filesByPath).filter(function (path) { return /\.css$/i.test(path); });
+    for (var c = 0; c < cssPaths.length; c++) {
+      var cp = cssPaths[c];
+      var css = await filesByPath[cp].blob.text();
+      css = css.replace(/url\((['"]?)([^'")]+)\1\)/gi, function (_, q, ref) { return 'url("' + resolveAsset(cp, ref) + '")'; });
+      var cssUrl = URL.createObjectURL(new Blob([css], { type: 'text/css' }));
+      urls[cp] = cssUrl;
+      Array.prototype.forEach.call(doc.querySelectorAll('link[href]'), function (el) {
+        var target = zipPath(record.entry, el.getAttribute('href'));
+        if (target === cp) el.setAttribute('href', cssUrl);
+      });
+    }
+
+    var finalHtml = '<!doctype html>\n' + doc.documentElement.outerHTML;
+    var finalUrl = URL.createObjectURL(new Blob([finalHtml], { type: 'text/html' }));
+    return { url: finalUrl, extraUrls: Object.keys(urls).map(function (k) { return urls[k]; }).concat(finalUrl) };
+  }
+
+'''
+              if marker not in s:
+                  raise SystemExit('handleFiles marker not found')
+              s = s.replace(marker, helper + marker, 1)
+
+              old = '''  function handleFiles(list) {
+    if (!list || !list.length) return;
+    Array.prototype.forEach.call(list, function (f) {
+      var isHtml = /\\.html?$/i.test(f.name) || f.type === 'text/html';
+      if (!isHtml) { showToast(f.name + ' is not an HTML file', 'error'); return; }
+      uploadFile(f);
+    });
+  }'''
+              new = '''  function handleFiles(list) {
+    if (!list || !list.length) return;
+    Array.prototype.forEach.call(list, function (f) {
+      if (/\\.zip$/i.test(f.name) || f.type === 'application/zip' || f.type === 'application/x-zip-compressed') {
+        uploadZipFile(f);
+        return;
+      }
+      var isHtml = /\\.html?$/i.test(f.name) || f.type === 'text/html';
+      if (!isHtml) { showToast(f.name + ' is not an HTML or ZIP file', 'error'); return; }
+      uploadFile(f);
+    });
+  }'''
+              if old not in s:
+                  raise SystemExit('handleFiles block not found')
+              s = s.replace(old, new, 1)
+
+              old_open = '''      var url = URL.createObjectURL(updated.blob);
+      setPreview({ file: updated, allowStorage: !!updated.allowStorage, url: url, });'''
+              new_open = '''      var built = updated.isZipProject ? await buildZipPreview(updated) : { url: URL.createObjectURL(updated.blob), extraUrls: [] };
+      setPreview({ file: updated, allowStorage: !!updated.allowStorage, url: built.url, extraUrls: built.extraUrls });'''
+              if old_open not in s:
+                  raise SystemExit('openFile block not found')
+              s = s.replace(old_open, new_open, 1)
+
+              old_close = '''    if (preview) { try { URL.revokeObjectURL(preview.url); } catch (e) {} }'''
+              new_close = '''    if (preview) {
+      (preview.extraUrls || [preview.url]).forEach(function (u) { try { URL.revokeObjectURL(u); } catch (e) {} });
+    }'''
+              if old_close not in s:
+                  raise SystemExit('closePreview block not found')
+              s = s.replace(old_close, new_close, 1)
+
+              s = s.replace('Drop in any <em>.html</em> file and open it instantly in a sandboxed preview.', 'Drop in an <em>.html</em> file or a <em>.zip</em> website project and open it instantly in a sandboxed preview.')
+              s = s.replace('Drag &amp; drop an HTML file here, or', 'Drag &amp; drop an HTML or ZIP website here, or')
+              s = s.replace('accept=".html,.htm,text/html"', 'accept=".html,.htm,.zip,text/html,application/zip"')
+              s = s.replace('ZIP website import', 'ZIP website import')
+
+              p.write_text(s, encoding='utf-8')
+          else:
+              print('ZIP support already present')
+          PY
+      - name: Commit patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add index.html
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Add 150MB ZIP website importer"
+            git push
+          fi
