@@ -135,14 +135,15 @@ const server = http.createServer((req, res) => {
     const ext = path.extname(filePath).toLowerCase();
     const contentType = mimeTypes[ext] || 'application/octet-stream';
 
-    // Inject the compatibility layer into the existing Vellum page only.
+    // Inject compatibility helpers into the existing Vellum page only.
     if (path.basename(filePath).toLowerCase() === 'index.html') {
       fs.readFile(filePath, 'utf8', (readErr, html) => {
         if (readErr) return send(res, 500, 'text/plain; charset=utf-8', '500 Server Error');
-        const tag = '<script src="/vellum-large-zip.js?v=chunked-4mb"></script>';
-        // Remove any old helper tag first, then inject the current version once.
+        const helperTag = '<script src="/vellum-large-zip.js?v=chunked-4mb"></script>';
+        const interceptorTag = '<script src="/vellum-large-source-interceptor.js?v=direct-wintrchess-1"></script>';
         html = html.replace(/<script\s+src=["']\/vellum-large-zip\.js(?:\?[^"']*)?["']><\/script>/gi, '');
-        html = html.replace('</head>', tag + '</head>');
+        html = html.replace(/<script\s+src=["']\/vellum-large-source-interceptor\.js(?:\?[^"']*)?["']><\/script>/gi, '');
+        html = html.replace('</head>', helperTag + interceptorTag + '</head>');
         res.writeHead(200, {
           'Content-Type': contentType,
           'Cache-Control': 'no-cache, no-store, must-revalidate',
