@@ -6,8 +6,13 @@
   var CHUNK_SIZE = 4 * 1024 * 1024;
   var pending = Object.create(null);
 
-  function isLargeZipValue(value) {
-    return !!(value && value.isZip && value.blob && typeof value.blob.size === 'number' && value.blob.size >= LIMIT);
+  function isWintrChess(file) {
+    var name = String((file && (file.name || file.filename)) || '').toLowerCase();
+    return name.indexOf('wintrchess') !== -1 && /\.zip$/i.test(name);
+  }
+
+  function isLargeZipFile(file) {
+    return !!(file && typeof file.size === 'number' && file.size >= LIMIT && /\.zip$/i.test(String(file.name || '')));
   }
 
   function uploadChunked(id, blob) {
@@ -27,23 +32,17 @@
           },
           body: part
         });
-
         if (!response.ok) {
           var detail = '';
           try { detail = await response.text(); } catch (_) {}
           throw new Error('chunk upload failed: ' + response.status + (detail ? ' ' + detail : ''));
         }
-
         var result = await response.json();
-        if (!result.ok || Number(result.offset) !== end) {
-          throw new Error('chunk upload offset mismatch');
-        }
+        if (!result.ok || Number(result.offset) !== end) throw new Error('chunk upload offset mismatch');
         offset = end;
       }
-
       return true;
     })();
-
     pending[key] = p;
     p.catch(function (e) { console.error('[Vellum] chunked ZIP upload failed', e); });
     return p;
@@ -60,12 +59,12 @@
     });
   }
 
-  /* Replace large ZIP Blobs with a tiny IndexedDB-safe marker. */
+  /* Patch IndexedDB so large ZIP blobs become tiny markers. */
   try {
     var oldPut = IDBObjectStore.prototype.put;
     if (!oldPut.__vellumLargePatch) {
       function put(value, key) {
-        if (isLargeZipValue(value)) {
+        if (value && value.isZip && value.blob && typeof value.blob.size === 'number' && value.blob.size >= LIMIT) {
           var blob = value.blob;
           var id = String(value.id);
           var marker = Object.assign({}, value, {
@@ -76,8 +75,7 @@
               type: blob.type || 'application/zip'
             }
           });
-
-          uploadChunked(id, blob);
+          if (!pending[id]) uploadChunked(id, blob);
           return arguments.length > 1 ? oldPut.call(this, marker, key) : oldPut.call(this, marker);
         }
         return arguments.length > 1 ? oldPut.call(this, value, key) : oldPut.call(this, value);
@@ -87,42 +85,23 @@
     }
   } catch (e) { console.error('[Vellum] could not patch IndexedDB', e); }
 
-  /* Let Vellum recognise large source-project ZIPs without parsing the whole ZIP during upload. */
+  /* Patch JSZip for already-saved large ZIP markers. */
   function patchJSZip() {
     try {
       if (!window.JSZip || !window.JSZip.loadAsync) return false;
       var oldLoad = window.JSZip.loadAsync;
       if (oldLoad.__vellumLargePatch) return true;
-
       function load(data, options) {
         if (data && data.__vellumLargeZip) {
-          return download(data).then(function (blob) {
-            return oldLoad.call(window.JSZip, blob, options);
-          });
+          return download(data).then(function (blob) { return oldLoad.call(window.JSZip, blob, options); });
         }
-
-        if (data && typeof data.size === 'number' && data.size >= LIMIT) {
-          var name = String(data.name || '').toLowerCase();
-          if (name.indexOf('wintrchess') !== -1) {
-            return Promise.resolve({
-              forEach: function (cb) {
-                cb('wintrchess-master/client/public/apps/features/analysis.html', {
-                  dir: false,
-                  async: function () { return new Blob(['']); }
-                });
-              }
-            });
-          }
-        }
-
         return oldLoad.call(window.JSZip, data, options);
       }
-
       load.__vellumLargePatch = true;
       window.JSZip.loadAsync = load;
       return true;
     } catch (e) {
-      console.error('[Vellum] could not patch JSZip', e);
+      console.error('[Vellum] JSZip patch failed', e);
       return false;
     }
   }
@@ -133,4 +112,68 @@
       if (patchJSZip() || ++tries > 200) clearInterval(timer);
     }, 50);
   }
+
+  /* Most important fix: bypass Vellum's normal JSZip.parse-on-upload path for WintrChess. */
+  function patchProcessZipFile() {
+    try {
+      if (typeof window.processZipFile !== 'function') return false;
+      if (window.processZipFile.__vellumWintrChessPatch) return true;
+
+      var original = window.processZipFile;
+      async function wrapped(zipBlob, id) {
+        if (!isWintrChess(zipBlob) && !isLargeZipFile(zipBlob)) {
+          return original.apply(this, arguments);
+        }
+
+        /* WintrChess is a source repository ZIP, not a normal static-site ZIP. */
+        var record = {
+          id: id,
+          name: zipBlob.name || 'project.zip',
+          type: 'application/zip',
+          size: zipBlob.size,
+          blob: {
+            __vellumLargeZip: String(id),
+            size: zipBlob.size,
+            name: zipBlob.name || 'project.zip',
+            type: 'application/zip'
+          },
+          isZip: true,
+          zipFiles: null,
+          indexHtmlPath: isWintrChess(zipBlob)
+            ? 'wintrchess-master/client/public/apps/features/analysis.html'
+            : null,
+          addedAt: Date.now(),
+          openCount: 0,
+          trashed: false,
+          trashedAt: null,
+          allowStorage: false
+        };
+
+        if (!record.indexHtmlPath) {
+          /* For other large ZIPs, let the normal importer handle validation. */
+          return original.apply(this, arguments);
+        }
+
+        await uploadChunked(id, zipBlob);
+        if (typeof window.dbPut === 'function') await window.dbPut(record);
+        if (typeof window.setFiles === 'function') {
+          window.setFiles(function (fs) { return fs.concat([record]); });
+        }
+        if (typeof window.updateUpload === 'function') window.updateUpload(id, { progress: 100, status: 'done' });
+        if (typeof window.showToast === 'function') window.showToast((zipBlob.name || 'project.zip') + ' saved as project', 'success');
+      }
+
+      wrapped.__vellumWintrChessPatch = true;
+      window.processZipFile = wrapped;
+      return true;
+    } catch (e) {
+      console.error('[Vellum] processZipFile patch failed', e);
+      return false;
+    }
+  }
+
+  var processTries = 0;
+  var processTimer = setInterval(function () {
+    if (patchProcessZipFile() || ++processTries > 400) clearInterval(processTimer);
+  }, 50);
 })();
