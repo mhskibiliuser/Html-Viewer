@@ -42,7 +42,7 @@ const server = http.createServer((req, res) => {
   const parsedUrl = url.parse(req.url, true);
   let pathname = parsedUrl.pathname || '/';
 
-  // Large ZIP upload endpoint used by Vellum.
+  // Legacy one-request upload endpoint.
   if (req.method === 'POST' && pathname === '/__vellum_upload') {
     const id = safeId(parsedUrl.query.id);
     if (!id) return send(res, 400, 'text/plain; charset=utf-8', 'missing id');
@@ -55,6 +55,37 @@ const server = http.createServer((req, res) => {
       if (!failed) send(res, 200, 'application/json; charset=utf-8', JSON.stringify({ ok: true, id: id }));
     });
     req.pipe(out);
+    return;
+  }
+
+  // Chunked upload endpoint. Vellum sends a large ZIP as small sequential pieces.
+  if (req.method === 'POST' && pathname === '/__vellum_upload_chunk') {
+    const id = safeId(parsedUrl.query.id);
+    const offset = Number(parsedUrl.query.offset);
+    if (!id || !Number.isSafeInteger(offset) || offset < 0) {
+      return send(res, 400, 'text/plain; charset=utf-8', 'bad chunk parameters');
+    }
+
+    const target = storedPath(id);
+    fs.stat(target, (statErr, stats) => {
+      const currentSize = statErr ? 0 : stats.size;
+      if (currentSize !== offset) {
+        return send(res, 409, 'application/json; charset=utf-8', JSON.stringify({ ok: false, expectedOffset: currentSize }));
+      }
+
+      const out = fs.createWriteStream(target, { flags: offset === 0 ? 'w' : 'a' });
+      let failed = false;
+      req.on('error', () => { failed = true; out.destroy(); });
+      out.on('error', () => { failed = true; });
+      out.on('finish', () => {
+        if (failed) return;
+        fs.stat(target, (err, statsAfter) => {
+          if (err) return send(res, 500, 'text/plain; charset=utf-8', 'could not verify chunk');
+          send(res, 200, 'application/json; charset=utf-8', JSON.stringify({ ok: true, id: id, offset: statsAfter.size }));
+        });
+      });
+      req.pipe(out);
+    });
     return;
   }
 
@@ -108,10 +139,10 @@ const server = http.createServer((req, res) => {
     if (path.basename(filePath).toLowerCase() === 'index.html') {
       fs.readFile(filePath, 'utf8', (readErr, html) => {
         if (readErr) return send(res, 500, 'text/plain; charset=utf-8', '500 Server Error');
-        const tag = '<script src="/vellum-large-zip.js"></script>';
-        if (html.indexOf('/vellum-large-zip.js') === -1) {
-          html = html.replace('</head>', tag + '</head>');
-        }
+        const tag = '<script src="/vellum-large-zip.js?v=chunked-4mb"></script>';
+        // Remove any old helper tag first, then inject the current version once.
+        html = html.replace(/<script\s+src=["']\/vellum-large-zip\.js(?:\?[^"']*)?["']><\/script>/gi, '');
+        html = html.replace('</head>', tag + '</head>');
         res.writeHead(200, {
           'Content-Type': contentType,
           'Cache-Control': 'no-cache, no-store, must-revalidate',
